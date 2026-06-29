@@ -1,0 +1,50 @@
+# Profile template. To run the tool for someone else:
+#   1. Copy this file to profiles/<their-name>.toml  (e.g. profiles/jan.toml)
+#   2. Fill in the fields below (collect their answers with profiles/QUESTIONNAIRE.md first).
+#   3. Run:  python a_scrape.py --profile jan
+# Their search is fully sandboxed: results land in job_market_data/_profiles/jan/, and nothing
+# touches the owner's archive. Share their Weekly_Job_Matches.md from that folder.
+#
+# Filling tip: edit only the text inside the quotes. Keep the triple quotes (""") around the
+# long blocks. A missing quote is the one thing that stops the file loading, so if a run
+# complains about the profile, check the quotes first.
+
+# OPTIONAL — the candidate's name, used only to label the generated Application Brief. Omit to
+# fall back to "the candidate".
+# name = "Jan"
+
+# WHO THEY ARE (required) — the prose the scorer judges fit against. Plain language. Mention
+# their field, skills, what kind of role they want, and anything to avoid. If you have their
+# CV, write this from the CV plus their answers. Honesty helps the score.
+candidate_profile = """
+[Name] is looking for [type of role, e.g. a student data-analyst role / a part-time office
+role at a tech company]. Background: [studies or work history, key skills]. Strengths:
+[2-4 real strengths]. Currently [student / working] in/around [city] with ~[N]h/week
+available. Aiming to [career goal]. Not interested in: [e.g. HR, sales].
+"""
+
+# WHERE THEY ARE (required) — the commute rule. Describe what counts as reachable for THEM,
+# and what does not, plus whether fully remote is acceptable. Replaces the owner's Copenhagen rule.
+location_anchor = """
+reachable within ~45 minutes by public transport from [their area], i.e. [list nearby towns
+that count], OR the role is fully remote. FALSE for [places too far] and anywhere abroad
+unless the role is fully remote
+"""
+
+# OPTIONAL — search terms to feed the job boards. Remove this block to reuse the default
+# (Copenhagen-flavoured) terms. Mix the local language and English for best coverage.
+queries = [
+    "student assistant data",
+    "data analyst student",
+    "IT support student",
+    "office assistant",
+]
+
+# OPTIONAL — danish_ok = true keeps Danish-required roles in this person's shortlist (they're
+# comfortable working in Danish). Default (omitted) hides roles the scorer grades as requiring
+# Danish. Either way the multilingual model still reads and scores Danish-language ads.
+# danish_ok = true
+
+# OPTIONAL — drop the location filter entirely (e.g. someone seeking fully-remote only,
+# anywhere). Default is true (apply the location_anchor above). Uncomment to disable.
+# require_commutable = false

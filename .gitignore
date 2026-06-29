@@ -1,0 +1,8 @@
+job_market_data/
+applications/
+__pycache__/
+*.pyc
+.env
+master_profile.md
+profiles/*.toml
+!profiles/_template.toml

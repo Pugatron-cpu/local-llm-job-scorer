@@ -1,0 +1,9 @@
+# Install with:  pip install -r requirements.txt
+# Then, once only, fetch the browser Playwright drives:  playwright install chromium
+# Not pip-installable (run separately): Ollama, serving the model named in config.py (MODEL).
+
+requests
+beautifulsoup4
+playwright
+lingua-language-detector        # Danish-language detection (core.looks_danish_only)
+tomli; python_version < "3.11"  # profiles need TOML; built in on 3.11+, this is the fallback
