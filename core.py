@@ -704,15 +704,21 @@ def confidently_danish(text: str, min_len: int = 60) -> bool:
 
 
 _LINGUA = None
+_LINGUA_LOCK = threading.Lock()
 def _detect_lang(text: str):
-    """Return 'da'/'en'/'no'/'sv'/None. Lazily loads lingua, then langdetect."""
+    """Return 'da'/'en'/'no'/'sv'/None. Lazily loads lingua, then langdetect. The build is
+    guarded by a lock (double-checked) because _detect_lang is called from the SCORE_WORKERS
+    thread pool: without it, several threads on the first batch would each build the detector
+    concurrently — wasteful and a data race. Pre-warm once before the pool (see main)."""
     global _LINGUA
     try:
         if _LINGUA is None:
-            from lingua import Language, LanguageDetectorBuilder
-            names = ["ENGLISH", "DANISH", "SWEDISH", "NORWEGIAN_BOKMAL", "NYNORSK"]
-            langs = [getattr(Language, n) for n in names if hasattr(Language, n)]
-            _LINGUA = LanguageDetectorBuilder.from_languages(*langs).build()
+            with _LINGUA_LOCK:
+                if _LINGUA is None:
+                    from lingua import Language, LanguageDetectorBuilder
+                    names = ["ENGLISH", "DANISH", "SWEDISH", "NORWEGIAN_BOKMAL", "NYNORSK"]
+                    langs = [getattr(Language, n) for n in names if hasattr(Language, n)]
+                    _LINGUA = LanguageDetectorBuilder.from_languages(*langs).build()
         res = _LINGUA.detect_language_of(text)
         return {"DANISH": "da", "ENGLISH": "en", "NORWEGIAN_BOKMAL": "no",
                 "NYNORSK": "no", "SWEDISH": "sv"}.get(res.name) if res else None
@@ -866,7 +872,10 @@ Respond with ONLY a JSON object, no markdown fences, no other text, exactly like
         # may still emit an EMPTY thought block before the JSON; the parser's {...} fallback
         # in _parse_score handles it.
         "think": False,
-        "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": 400},
+        # 512 (was 400): headroom so a full object — reasoning + a populated matched_skills
+        # array — can't get truncated mid-JSON into a parse failure (which drops the row and
+        # forces a re-fetch+re-score next run). Still tiny next to the fetch cost.
+        "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": 512},
     }
     try:
         r = requests.post(OLLAMA_URL, json=payload, timeout=TIMEOUT_S)
@@ -1221,44 +1230,56 @@ def _dedup_archive(archive_path: str) -> list:
     return list(by_rk.values()) + passthrough
 
 
+def shortlist_reject_reason(r: dict, today=None):
+    """The single source of truth for the shortlist VIEW filters: returns the reason string a
+    (deduped) archive row is NOT on the open shortlist, or None if it qualifies. Shared by
+    shortlist_with_reasons (report / b_analyze / c_prepare) AND main()'s live console, so the
+    count printed during a run matches Weekly_Job_Matches.md instead of over-counting on just
+    score+type. On a qualifying row it sets r['_days_left'] for downstream sorting/display."""
+    today = today or datetime.now().date()
+    try:
+        score = int(r.get("score") or 0)
+    except (ValueError, TypeError):
+        score = 0
+    if score < SCORE_THRESHOLD:
+        return "score below threshold"
+    if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
+        return "employment type not targeted"
+    if REQUIRE_COMMUTABLE and str(r.get("commute_ok", "true")).lower() == "false":
+        return "not commutable"
+    if EXCLUDE_DANISH_REQUIRED and str(r.get("danish_level", "")).lower() == "required":
+        return "danish required (hidden by filter)"
+    if EXCLUDE_DANISH_ADS and str(r.get("ad_language", "")).lower() == "da":
+        return "ad written in Danish (hidden by filter)"
+    if r.get("track") == "B" and score < TRACK_B_MIN_SCORE:
+        return f"track B below its own bar ({TRACK_B_MIN_SCORE})"
+    is_open, days_left = role_open_status(r, today)
+    if not is_open:
+        return "closed / aged out"
+    r["_days_left"] = days_left
+    return None
+
+
 def shortlist_with_reasons(archive_path: str):
     """(kept, dropped) — the open shortlist plus a Counter of why each deduped archive row
     was excluded. The reasons are what b_analyze reports, so 'why isn't X showing?' is
-    answerable without re-reading the filter code."""
+    answerable without re-reading the filter code. Filtering is delegated to
+    shortlist_reject_reason so this view and main()'s live console never drift."""
     from collections import Counter
     dropped = Counter()
     today_d = datetime.now().date()
     kept = []
     for r in _dedup_archive(archive_path):
-        if r["score"] < SCORE_THRESHOLD:
-            dropped["score below threshold"] += 1
+        reason = shortlist_reject_reason(r, today_d)
+        if reason:
+            dropped[reason] += 1
             continue
-        if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
-            dropped["employment type not targeted"] += 1
-            continue
-        if REQUIRE_COMMUTABLE and str(r.get("commute_ok", "true")).lower() == "false":
-            dropped["not commutable"] += 1
-            continue
-        if EXCLUDE_DANISH_REQUIRED and str(r.get("danish_level", "")).lower() == "required":
-            dropped["danish required (hidden by filter)"] += 1
-            continue
-        if EXCLUDE_DANISH_ADS and str(r.get("ad_language", "")).lower() == "da":
-            dropped["ad written in Danish (hidden by filter)"] += 1
-            continue
-        if r.get("track") == "B" and r["score"] < TRACK_B_MIN_SCORE:
-            dropped[f"track B below its own bar ({TRACK_B_MIN_SCORE})"] += 1
-            continue
-        is_open, days_left = role_open_status(r, today_d)
-        if not is_open:
-            dropped["closed / aged out"] += 1
-            continue
-        r["_days_left"] = days_left
         kept.append(r)
 
     # urgency first (known deadline, soonest), then score
     kept.sort(key=lambda r: (r["_days_left"] is None,
                              r["_days_left"] if r["_days_left"] is not None else 0,
-                             -r["score"]))
+                             -int(r.get("score") or 0)))
     return kept, dropped
 
 
@@ -1332,6 +1353,7 @@ def write_report(report_path: str, archive_path: str):
             f.write(f"**Seen:** {j.get('scraped_date', '')}  \n")
             f.write(f"**Why:** {j.get('reasoning', '')}\n\n---\n\n")
     log.info(f"Wrote {len(matches)} matches -> {report_path}")
+    return len(matches)
 
 def rescore_missing_flags(limit: int = 40):
     """Maintenance mode (`python a_scrape.py --rescore`): rows scored before the
@@ -1564,6 +1586,11 @@ def main():
         job["scraped_date"] = today
         return job
 
+    # Pre-warm the language detector on this thread, so the SCORE_WORKERS threads don't race
+    # to build it concurrently on their first _detect_lang call (the build is expensive).
+    if survivors:
+        _detect_lang("Warm up the language detector before the scoring pool starts.")
+
     matches = []
     errors = 0
     with ArchiveWriter(MASTER_ARCHIVE) as archive:
@@ -1580,17 +1607,20 @@ def main():
                     errors += 1
                     continue  # don't archive failures -> URLs stay unseen and get retried
                 archive.write(job)
-                # Console shortlist mirrors the report's VIEW filter: score + accepted type.
-                if (job["score"] >= SCORE_THRESHOLD
-                        and job["employment_type"] in ACCEPTED_EMPLOYMENT_TYPES):
+                # Console preview uses the SAME predicate as the report (score, type, commute,
+                # Danish, track-B bar, still-open) via shortlist_reject_reason, so what prints
+                # here can't over-count relative to Weekly_Job_Matches.md the way score+type did.
+                if shortlist_reject_reason(job) is None:
                     print(f"  [{job['score']:>3}/100 {job['track']} {job['employment_type']}] "
                           f"{job['title']} @ {job['company']} ({job.get('source_site','?')})")
                     matches.append(job)
         log.info(f"Stage 3b: scored + archived {archive.count} jobs "
-                 f"({len(matches)} in shortlist; {errors} errors; {SCORE_WORKERS} workers)")
+                 f"({len(matches)} newly qualify; {errors} errors; {SCORE_WORKERS} workers)")
     t_after_score = _mark("score", t_after_fetch)
 
-    write_report(MARKDOWN_REPORT, MASTER_ARCHIVE)
+    # Authoritative shortlist size = the whole archive re-filtered (this run's new hits PLUS
+    # still-open rows from prior runs), which is what the report and runs.csv should record.
+    shortlist_n = write_report(MARKDOWN_REPORT, MASTER_ARCHIVE)
 
     # Per-run log (timing + funnel) -> a small "runs" table you can analyze over time.
     total_s = time.monotonic() - t0
@@ -1599,7 +1629,7 @@ def main():
         "danish_early": drop["danish_early"], "danish_body": drop["danish"],
         "deadline_dropped": drop["deadline"], "fetched": len(to_fetch),
         "snippet_fallback": fallback,
-        "scored": archive.count, "errors": errors, "matches": len(matches),
+        "scored": archive.count, "errors": errors, "matches": shortlist_n,
     })
     log.info(f"Done in {total_s:.1f}s "
              f"(scrape {timings.get('scrape', 0):.1f}s, "

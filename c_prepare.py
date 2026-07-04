@@ -13,10 +13,12 @@ USAGE
     python c_prepare.py https://...            # prep any job URL (in the archive or not)
     python c_prepare.py --status <url> applied # update a tracked role's status
 
-The brief is a HANDOFF: a fresh Claude conversation in the Project (which has
-master_profile.md + the Alipes letter) does the final CV + motivation letter. c_prepare does
-NOT write the application itself — it assembles honest, structured raw material and never
-fabricates company facts or candidate claims.
+The brief is a HANDOFF: a fresh Claude conversation in the Project (which has the candidate's
+master profile) does the final CV + motivation letter. The handoff wording (which profile file
+is the source of truth, the letter formula, how to lead each lane) is per-person, set in
+profiles/<name>.toml (brief_* keys), NOT hardcoded here. c_prepare does NOT write the
+application itself — it assembles honest, structured raw material and never fabricates company
+facts or candidate claims.
 
 Settings: config.py. Engine: core.py. See README.md.
 """
@@ -159,9 +161,10 @@ def _update_status(url: str, new_status: str) -> bool:
 
 # --- archive lookup (for roles already scored) --------------------------------------------
 def _archive_row(url: str):
-    """Return the highest-scored archive row for this URL, or None.
-    Compared on the canonical url so a role scored under one source's URL is found when
-    looked up by another source's variant of the same link."""
+    """Return the MOST RECENTLY SCORED archive row for this URL (tiebreak: higher score), or
+    None. Latest-wins matches core._dedup_archive, so the brief reflects the same row the
+    shortlist shows. Compared on the canonical url so a role scored under one source's URL
+    is found when looked up by another source's variant of the same link."""
     if not os.path.isfile(config.MASTER_ARCHIVE):
         return None
     cu = core.canonical_url(url)
@@ -174,7 +177,8 @@ def _archive_row(url: str):
                 r["score"] = int(r.get("score") or 0)
             except ValueError:
                 r["score"] = 0
-            if best is None or r["score"] > best["score"]:
+            key = (r.get("scraped_date") or "", r["score"])
+            if best is None or key > ((best.get("scraped_date") or ""), best["score"]):
                 best = r
     return best
 
@@ -204,10 +208,16 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
     track = meta.get("track", "")
     lane = "A" if track == "A" else ("B" if track == "B" else "?")
     lane_word = {"A": "Lane A (technical)", "B": "Lane B (foot-in-the-door)"}.get(lane, "the matching lane")
-    lead = ("Lead with the AI Content Architecture portfolio — it's the differentiator."
-            if lane == "A" else
-            "This is a foot-in-the-door role: lead with reliability, stakeholder calm, and the "
-            "intent to grow into technical work; mention the portfolio as evidence of initiative.")
+    # Per-person handoff wording (config, from the active profile). Neutral fallbacks so a
+    # profile that doesn't set them still produces a correct, if generic, brief — never one
+    # naming the wrong candidate.
+    name = config.BRIEF_NAME
+    master_phrase = f"`{config.BRIEF_MASTER_REF}`" if config.BRIEF_MASTER_REF else f"{name}'s master profile"
+    default_lead = ("Lead with the strongest, most role-relevant technical evidence."
+                    if lane == "A" else
+                    "This is a foot-in-the-door role: lead with reliability and stakeholder "
+                    "skills, and the intent to grow into technical work.")
+    lead = ((config.BRIEF_LEAD_A if lane == "A" else config.BRIEF_LEAD_B) or default_lead)
 
     score_line = ""
     if meta.get("score"):
@@ -218,7 +228,15 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
         matched = [m.strip() for m in matched.split(",") if m.strip()]
     matched_line = f"- **Scorer matched skills:** {', '.join(matched)}\n" if matched else ""
 
-    danish = str(meta.get("danish_required", "")).lower() == "true"
+    # Danish flag from the CURRENT columns (an earlier version read the removed
+    # danish_required boolean here, so every brief said "no / not stated").
+    lvl = str(meta.get("danish_level", "")).strip().lower()
+    danish_line = {"required": "⚠ required",
+                   "preferred": "a plus, not mandatory",
+                   "none": "no / not stated"}.get(lvl, "unknown (scored before the "
+                                                       "danish_level column — verify in the ad)")
+    if str(meta.get("ad_language", "")).lower() == "da":
+        danish_line += " · ad written in Danish"
     today = datetime.now().strftime("%Y-%m-%d")
 
     if description.strip():
@@ -230,12 +248,12 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
     return f"""# Application Brief — {meta.get('company', '')} — {meta.get('title', '')}
 
 > **HANDOFF TO CLAUDE.** Paste this whole file into the job-search Project. Using
-> `master_profile.md` as the ONLY source of facts about {config.CANDIDATE_NAME}, produce: **(a)** a tailored
-> {lane_word} CV as RxResume sections, and **(b)** a ~250–300 word motivation letter using the
-> Alipes cover-letter formula. {lead} Pick ONE genuine, specific hook yourself from
+> {master_phrase} as the ONLY source of facts about {name}, produce: **(a)** a tailored
+> {lane_word} CV as {config.BRIEF_CV_FORMAT}, and **(b)** a ~250–300 word motivation letter
+> using {config.BRIEF_LETTER_FORMULA}. {lead} Pick ONE genuine, specific hook yourself from
 > *Company facts* below — never fabricate enthusiasm. Mirror the role's ATS keywords ONLY where
-> they are true of {config.CANDIDATE_NAME}. Treat *Alignment draft* as unverified hints: flag any must-have {config.CANDIDATE_NAME}
-> doesn't clearly meet instead of papering over it. State nothing `master_profile.md` doesn't support.
+> they are true of {name}. Treat *Alignment draft* as unverified hints: flag any must-have
+> {name} doesn't clearly meet instead of papering over it. State nothing {master_phrase} doesn't support.
 
 ## Role
 - **Company:** {meta.get('company', '')}
@@ -243,7 +261,7 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
 - **Location:** {meta.get('location', '') or '—'}
 - **Type:** {meta.get('employment_type', '') or '—'} · **Work mode:** {meta.get('work_mode', '') or '—'}
 - **Deadline:** {meta.get('deadline', '') or '—'}
-- **Danish required:** {'⚠ yes' if danish else 'no / not stated'}
+- **Danish:** {danish_line}
 - **URL:** {meta.get('url', '')}
 {score_line}{matched_line}
 **What this role is:** {tf.get('role_summary', '_(transform unavailable — read the JD below)_')}
@@ -258,13 +276,13 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
 **Responsibilities**
 {_bullets(tf.get('responsibilities'))}
 
-**ATS keywords** _(mirror in the CV only where true of {config.CANDIDATE_NAME})_
+**ATS keywords** _(mirror in the CV only where true of {name})_
 {_bullets(tf.get('ats_keywords'))}
 
 ## Company facts — pick ONE genuine hook (do not invent)
 {_bullets(tf.get('company_facts'))}
 
-## Alignment draft — {config.CANDIDATE_NAME} ↔ role _(UNVERIFIED — check against master_profile.md, don't over-claim)_
+## Alignment draft — {name} ↔ role _(UNVERIFIED — check against {master_phrase}, don't over-claim)_
 {_bullets(tf.get('candidate_alignment'))}
 
 ## Full job description (verbatim, fetched {today})

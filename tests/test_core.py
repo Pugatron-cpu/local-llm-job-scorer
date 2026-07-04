@@ -183,6 +183,52 @@ class DedupArchive(unittest.TestCase):
             os.remove(path)
 
 
+class ShortlistRejectReason(unittest.TestCase):
+    def _row(self, **kw):
+        from datetime import datetime
+        base = {"score": "80", "employment_type": "student", "commute_ok": "true",
+                "danish_level": "none", "ad_language": "en", "track": "A",
+                "scraped_date": datetime.now().date().isoformat(), "deadline": ""}
+        base.update(kw)
+        return base
+
+    def test_qualifying_row_passes(self):
+        self.assertIsNone(core.shortlist_reject_reason(self._row()))
+
+    def test_below_threshold(self):
+        self.assertEqual(core.shortlist_reject_reason(self._row(score="50")),
+                         "score below threshold")
+
+    def test_type_not_targeted(self):
+        self.assertEqual(core.shortlist_reject_reason(self._row(employment_type="full_time")),
+                         "employment type not targeted")
+
+    def test_track_b_below_its_bar(self):
+        # Track B at 78 clears SCORE_THRESHOLD (75) but not TRACK_B_MIN_SCORE (80).
+        reason = core.shortlist_reject_reason(self._row(score="78", track="B"))
+        self.assertIn("track B", reason)
+
+    def test_predicate_matches_shortlist_with_reasons(self):
+        # The console predicate and the report's filter must agree on the same row.
+        import tempfile, csv as _csv
+        rows = [self._row(url="https://x/pass"),
+                self._row(url="https://x/low", score="40"),
+                self._row(url="https://x/ft", employment_type="full_time")]
+        fd, path = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=core.ARCHIVE_FIELDS)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in core.ARCHIVE_FIELDS})
+        try:
+            kept, _ = core.shortlist_with_reasons(path)
+            passing = [r for r in rows if core.shortlist_reject_reason(dict(r)) is None]
+            self.assertEqual(len(kept), len(passing))
+        finally:
+            os.remove(path)
+
+
 class MigrateCsv(unittest.TestCase):
     def test_realigns_changed_header(self):
         fd, path = tempfile.mkstemp(suffix=".csv")

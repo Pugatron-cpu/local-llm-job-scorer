@@ -1,4 +1,12 @@
-# Profile template. To run the tool for someone else:
+# Profile template. EVERY run needs a profile — the owner's too (all personal data lives in
+# these gitignored files, never in tracked code).
+#
+# Owner setup (once):
+#   1. Copy this file to profiles/<yourname>.toml and fill it in
+#   2. export JOBSEARCH_OWNER=<yourname>     (e.g. in ~/.bashrc)
+#   3. Run:  python a_scrape.py              -> persists to the top-level data dirs
+#
+# Running for someone else:
 #   1. Copy this file to profiles/<their-name>.toml  (e.g. profiles/jan.toml)
 #   2. Fill in the fields below (collect their answers with profiles/QUESTIONNAIRE.md first).
 #   3. Run:  python a_scrape.py --profile jan
@@ -9,9 +17,8 @@
 # long blocks. A missing quote is the one thing that stops the file loading, so if a run
 # complains about the profile, check the quotes first.
 
-# OPTIONAL — the candidate's name, used only to label the generated Application Brief. Omit to
-# fall back to "the candidate".
-# name = "Jan"
+# OPTIONAL — their name, used in generated documents (briefs). Safe to leave empty.
+name = ""
 
 # WHO THEY ARE (required) — the prose the scorer judges fit against. Plain language. Mention
 # their field, skills, what kind of role they want, and anything to avoid. If you have their
@@ -45,6 +52,26 @@ queries = [
 # Danish. Either way the multilingual model still reads and scores Danish-language ads.
 # danish_ok = true
 
+# OPTIONAL — hide_danish_ads = true also hides ads whose MAIN LANGUAGE is Danish from the
+# shortlist (a view filter: they are still scored and archived, and reappear if set back to
+# false). Useful for someone who wants an English-only shortlist.
+# hide_danish_ads = true
+
 # OPTIONAL — drop the location filter entirely (e.g. someone seeking fully-remote only,
 # anywhere). Default is true (apply the location_anchor above). Uncomment to disable.
 # require_commutable = false
+
+# OPTIONAL — Application Brief handoff wording (c_prepare). The brief ends with an instruction
+# to a downstream Claude on how to draft the CV + letter for THIS person. All optional; the
+# defaults are neutral and generic. Set them to personalise the handoff:
+#   brief_master_ref     : the single source-of-truth profile file Claude must use for facts
+#                          (e.g. "master_profile.md"). Leave unset -> "<name>'s master profile".
+#   brief_letter_formula : the motivation-letter structure to follow.
+#   brief_cv_format      : the CV output format (e.g. "RxResume sections", "plain Markdown").
+#   brief_lead_a         : one sentence on how to OPEN a technical (Track A) application.
+#   brief_lead_b         : one sentence on how to OPEN a foot-in-the-door (Track B) application.
+# brief_master_ref     = "master_profile.md"
+# brief_letter_formula = "a clear problem → fit → motivation structure"
+# brief_cv_format      = "tailored CV sections"
+# brief_lead_a         = "Lead with the most relevant technical project."
+# brief_lead_b         = "Lead with reliability and stakeholder skills; state the intent to grow into technical work."

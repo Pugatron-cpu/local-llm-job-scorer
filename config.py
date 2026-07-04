@@ -15,13 +15,13 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- profiles ------------------------------------------------------------------------
-# The owner runs against the top-level data dirs and persists, as before. Anyone else runs
-# sandboxed and report-only. "Owner" = no --profile flag, or --profile <OWNER_PROFILE>.
-#
-# The owner's NAME is NOT hardcoded here, so this (public) file carries no personal data.
-# Set it once in your environment -- e.g. `export JOBSEARCH_OWNER=yourname` in ~/.bashrc -- and
-# put your personal settings in profiles/<that-name>.toml (gitignored). Defaults to "owner".
-OWNER_PROFILE = os.environ.get("JOBSEARCH_OWNER", "owner").strip().lower()
+# EVERY run loads its personal data (candidate profile, location rule, name) from
+# profiles/<name>.toml — including the owner's. No personal facts live in tracked code.
+# The owner is whoever the JOBSEARCH_OWNER env var names (set it once in ~/.bashrc:
+#   export JOBSEARCH_OWNER=<yourname>          # -> loads profiles/<yourname>.toml
+# The owner runs against the top-level data dirs and persists; anyone else (via
+# `--profile <name>`) runs fully sandboxed under _profiles/<name>/.
+OWNER_PROFILE = os.environ.get("JOBSEARCH_OWNER", "").strip().lower()
 PROFILES_DIR  = os.path.join(SCRIPT_DIR, "profiles")
 
 
@@ -40,8 +40,14 @@ def _read_profile_flag() -> str:
     return name.lower()
 
 
-ACTIVE_PROFILE = _read_profile_flag() or OWNER_PROFILE.lower()
-IS_OWNER       = (ACTIVE_PROFILE == OWNER_PROFILE.lower())
+ACTIVE_PROFILE = _read_profile_flag() or OWNER_PROFILE
+if not ACTIVE_PROFILE:
+    sys.exit("No profile selected. Either set the owner once:\n"
+             "    export JOBSEARCH_OWNER=<yourname>     # loads profiles/<yourname>.toml\n"
+             "or run for a specific person:\n"
+             "    python a_scrape.py --profile <name>\n"
+             "Create a profile by copying profiles/_template.toml to profiles/<name>.toml.")
+IS_OWNER = bool(OWNER_PROFILE) and (ACTIVE_PROFILE == OWNER_PROFILE)
 
 
 def _load_profile(name: str) -> dict:
@@ -68,7 +74,17 @@ def _load_profile(name: str) -> dict:
 
 # --- model / Ollama ------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL      = "qwen3.6:27b-q8_0"   # strong structured output + multilingual, fits the 48GB pool
+# Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
+# judgment/classification with structured output over mixed Danish/English ads. Gemma 4 is
+# trained on 140+ languages with balanced European representation and strong instruction
+# following; the 31B dense is the workstation flagship and q8_0 (34GB) fits the 48GB pool
+# with room for parallel KV slots at NUM_CTX below.
+# Alternatives, kept for A/B (run `python d_model_ab.py` to compare on YOUR archive):
+#   "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
+#                        coding-focused, and the match-quality regression coincided with it.
+#   "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
+#                        14GB less VRAM -> more parallel headroom. Good speed fallback.
+MODEL      = "gemma4:31b-it-q8_0"
 NUM_CTX    = 8192                  # room for a full description
 TIMEOUT_S  = 180                  # never let a hung request block the run
 
@@ -82,9 +98,11 @@ SCORE_THRESHOLD = 75
 # shows. Add "full_time" when you're open to it -> existing data resurfaces, no re-scoring.
 ACCEPTED_EMPLOYMENT_TYPES = {"student", "part_time", "internship", "unknown"}
 
-# Location filter (VIEW filter, like above). The LLM judges commute_ok against the active
-# profile's location_anchor (its home area, what counts as reachable, and whether fully remote
-# is acceptable). Set False to drop the filter entirely (e.g. if you can relocate).
+# Location filter (VIEW filter, like above). The LLM judges commute_ok = reachable within
+# ~45 min public transport of Ørestad, Copenhagen (Greater Copenhagen / Capital Region:
+# Copenhagen, Frederiksberg, Lyngby, Glostrup, Ballerup, Hellerup, Roskilde, etc.) OR fully
+# remote. Sweden / Malmö is EXCLUDED (cross-border) unless remote. Set False to drop the
+# filter entirely (e.g. if you can relocate). To include Sweden, edit the prompt in core.py.
 REQUIRE_COMMUTABLE = True
 
 # The report shows only roles likely STILL OPEN:
@@ -118,16 +136,35 @@ DROP_DANISH_LANGUAGE_ADS = False
 
 # EXCLUDE_DANISH_REQUIRED: a shortlist VIEW filter (like REQUIRE_COMMUTABLE). When True, hide
 #   roles the LLM graded danish_level="required". "preferred" (Danish a plus) and "none" are
-#   always kept. Set False to keep everything and just FLAG the Danish level, deciding per role.
-#   A non-owner profile's `danish_ok = true` maps to False here.
+#   always kept. Roles scored before the danish_level column existed have it BLANK; they are
+#   kept but flagged "flags unknown" in the report (run `a_scrape.py --rescore` to fix them).
 EXCLUDE_DANISH_REQUIRED = True
+
+# EXCLUDE_DANISH_ADS: a shortlist VIEW filter on the ad's detected WRITING language
+#   (ad_language column, set deterministically at scoring time via the language detector).
+#   True -> hide ads written mainly in Danish. Unlike DROP_DANISH_LANGUAGE_ADS this loses NO
+#   recall: the ads are still fetched, scored and archived, and reappear if set to False.
+#   This is the safe way to get a Danish-ad-free shortlist. Overridable per profile
+#   (hide_danish_ads in the toml).
+EXCLUDE_DANISH_ADS = True
+
+# TRACK_B_MIN_SCORE: Track B (foot-in-the-door) roles are prompted into a 70-90 band, so with
+#   SCORE_THRESHOLD=75 nearly any office role at a "tech company" used to make the shortlist.
+#   This VIEW filter gives Track B its own, higher bar; Track A keeps SCORE_THRESHOLD.
+TRACK_B_MIN_SCORE = 80
 
 DEBUG_DUMP_HTML = False             # True -> dump page 1 HTML so you can fix selectors
 
 # --- candidate profile (per person) --------------------------------------------------
-# CANDIDATE_NAME / CANDIDATE_PROFILE / LOCATION_ANCHOR are PER-PERSON and are loaded from the
-# active profile (profiles/<name>.toml) near the bottom of this file -- for the owner and
-# everyone else alike. No personal data lives in this (public) file. See profiles/_template.toml.
+# PERSONAL DATA LIVES IN profiles/<name>.toml (gitignored), for the OWNER too. These are
+# placeholders overwritten by the active profile at the bottom of this file. Nothing
+# personal is tracked in git.
+CANDIDATE_PROFILE = ""
+CANDIDATE_NAME    = ""
+
+# Commute rule the scorer applies for commute_ok. Loaded from the active profile's
+# location_anchor (see profiles/_template.toml for the expected shape).
+LOCATION_ANCHOR = ""
 
 # --- search terms --------------------------------------------------------------------
 TARGET_QUERIES = [
@@ -154,6 +191,14 @@ TARGET_QUERIES = [
     "cloud student",
     "infrastructure student",
     "automation student",
+    # --- Track A widening (2026-07): more angles on the same target roles ---
+    "studentermedhjælper analyse",
+    "studentermedhjælper digitalisering",
+    "studentermedhjælper AI",
+    "student assistant analytics",
+    "backend student",
+    "IT operations student",
+    "system administration student",
     # --- Track B: foot-in-the-door roles (LLM keeps only the ones at tech companies).
     #     Noisier; comment out if a run gets too slow.
     "office assistant",
@@ -206,7 +251,7 @@ EXCLUDE_TERMS = [
 # single-page app backed by a JSON search API, so core.scrape_thehub() hits that API directly
 # (no Playwright) for fast discovery.
 #
-# VERIFIED from a real response (2026-06-25 curl against the API):
+# VERIFIED from a real response (2026-06-25 curl on the z8):
 #     curl -s 'https://thehub.io/api/jobs?search=data&countryCode=DK&sorting=mostPopular&page=1' \
 #          -H 'Accept: application/json' | head -c 300
 #   - Path /api/jobs is correct. Query params: search, countryCode, sorting, page (1-INDEXED).
@@ -253,29 +298,73 @@ THEHUB_QUERIES = [
     "student",
     "office",
     "operations",
+    # --- widening (2026-07): safe now that Hub bodies go through the keyword prefilter ---
+    "analytics",
+    "backend",
+    "platform engineer",
+    "intern",
 ]
 
-# --- load the active profile (owner AND non-owner alike) -----------------------------
-# Per-person settings live in profiles/<name>.toml -- never in this file. The engine knobs and
-# term lists above are shared defaults a profile may selectively override. If no profile exists
-# for the active name, _load_profile() exits with instructions to create one from the template.
+# --- source: Jobnet (job.jobnet.dk) — SCAFFOLD, disabled until verified -----------------
+# Denmark's public job board (every employer receiving public funds must post here), so it
+# covers a segment Jobindex and The Hub both miss. It is a SPA over a JSON search API, same
+# pattern as The Hub. Shipped DISABLED (like The Hub originally was) because the endpoint and
+# field names MUST be confirmed once from a real browser before feeding the archive:
+#   1. Open https://job.jobnet.dk/CV/FindWork in a browser
+#   2. Devtools (F12) -> Network -> Fetch/XHR, run a search
+#   3. Find the JSON request; put its URL in JOBNET_API_URL and match the params below
+#   4. Check one job object's field names against _jobnet_teaser() in core.py
+#   5. Set JOBNET_ENABLED = True
+JOBNET_ENABLED    = False
+JOBNET_API_URL    = ""     # e.g. "https://job.jobnet.dk/CV/FindWork/Search" — CONFIRM FIRST
+JOBNET_QUERY_PARAM = "SearchString"
+JOBNET_OFFSET_PARAM = "Offset"     # Jobnet pages by result offset, not page number
+JOBNET_PAGE_SIZE  = 20
+JOBNET_MAX_PAGES  = 3
+JOBNET_QUERIES    = ["studentermedhjælper it", "studentermedhjælper data",
+                     "student assistant data", "it support student"]
+
+# --- load the active profile (EVERY run, owner included) -----------------------------
+# All personal settings come from profiles/<name>.toml — the owner's too, so no personal
+# data lives in tracked code. Engine knobs and term lists stay shared unless the profile
+# overrides one of the per-person settings below.
 _prof = _load_profile(ACTIVE_PROFILE)
-CANDIDATE_NAME    = (_prof.get("name") or "the candidate").strip()
 CANDIDATE_PROFILE = (_prof.get("candidate_profile") or "").strip()
 LOCATION_ANCHOR   = (_prof.get("location_anchor") or "").strip()
+CANDIDATE_NAME    = (_prof.get("name") or "").strip()
 if not CANDIDATE_PROFILE or not LOCATION_ANCHOR:
     sys.exit(f"Profile '{ACTIVE_PROFILE}' must set both candidate_profile and location_anchor "
              f"(see profiles/_template.toml).")
 if _prof.get("queries"):
     TARGET_QUERIES = [str(q) for q in _prof["queries"]]
+if _prof.get("thehub_queries"):
+    THEHUB_QUERIES = [str(q) for q in _prof["thehub_queries"]]
 if _prof.get("excluded_companies"):
     EXCLUDED_COMPANIES = [str(x).lower() for x in _prof["excluded_companies"]]
 if "require_commutable" in _prof:
     REQUIRE_COMMUTABLE = bool(_prof["require_commutable"])
-# danish_ok = true: this person is comfortable in Danish, so DON'T hide Danish-required roles
-# from their shortlist. Maps to the EXCLUDE_DANISH_REQUIRED view filter.
+# danish_ok = true: this person is comfortable in Danish, so DON'T hide Danish-required
+# roles from their shortlist. Maps to the EXCLUDE_DANISH_REQUIRED view filter.
 if "danish_ok" in _prof:
     EXCLUDE_DANISH_REQUIRED = not bool(_prof["danish_ok"])
+# hide_danish_ads = true: hide ads whose MAIN LANGUAGE is Danish from the shortlist.
+# View filter on the ad_language column: Danish ads are still scored + archived, and
+# reappear the moment this is set back to false. Maps to EXCLUDE_DANISH_ADS.
+if "hide_danish_ads" in _prof:
+    EXCLUDE_DANISH_ADS = bool(_prof["hide_danish_ads"])
+
+# --- Application Brief handoff (c_prepare) — per person -------------------------------
+# The brief c_prepare writes ends with a HANDOFF paragraph telling a downstream Claude how to
+# draft the CV + letter. That instruction is personal (which master-profile file is the source
+# of truth, which letter formula, how to lead each lane), so it lives in the profile — NOT
+# hardcoded in c_prepare, where it previously named one specific owner and would have told a
+# --profile run to write the WRONG person's application. All optional; neutral fallbacks below.
+BRIEF_NAME           = CANDIDATE_NAME or "the candidate"
+BRIEF_MASTER_REF     = (_prof.get("brief_master_ref") or "").strip()      # e.g. "master_profile.md"
+BRIEF_LETTER_FORMULA = (_prof.get("brief_letter_formula") or "a clear, specific motivation-letter structure").strip()
+BRIEF_CV_FORMAT      = (_prof.get("brief_cv_format") or "tailored CV sections").strip()
+BRIEF_LEAD_A         = (_prof.get("brief_lead_a") or "").strip()          # how to open a Track-A (technical) application
+BRIEF_LEAD_B         = (_prof.get("brief_lead_b") or "").strip()          # how to open a Track-B (foot-in-the-door) one
 
 # --- paths (owner -> top-level dirs; anyone else -> isolated sandbox) -----------------
 if IS_OWNER:
