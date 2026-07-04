@@ -73,8 +73,9 @@ _TRACKING_PARAMS = {
 
 
 def canonical_url(u: str) -> str:
-    """Normalise a job URL into a stable identity key: lowercase host, drop a leading 'www.',
-    drop tracking query params (utm_*, source, Codes, ...), keep functional ones (sorted for
+    """Normalise a job URL into a stable identity key: force the scheme to https (so an http
+    vs https variant of the same link collapses), lowercase host, drop a leading 'www.', drop
+    tracking query params (utm_*, source, Codes, ...), keep functional ones (sorted for
     stability), strip the fragment and any trailing slash. The SAME role then maps to the same
     key regardless of which source/aggregator produced the link. Used as the de-dup / lookup
     key in the archive, the shortlist, the tracker, and --status matching. NOTE: this never
@@ -95,17 +96,57 @@ def canonical_url(u: str) -> str:
             if k.lower() not in _TRACKING_PARAMS]
     query = urlencode(sorted(kept))
     path = s.path.rstrip("/") or "/"
-    return urlunsplit((s.scheme or "https", host, path, query, ""))
+    return urlunsplit(("https", host, path, query, ""))   # scheme forced: identity key only
+
+
+# Legal-entity suffixes and generic company words that vary between sources for the SAME
+# employer ("Monta" vs "Monta ApS" vs "Monta A/S Danmark"). Stripped before building the
+# cross-source role key so those variants collapse to one.
+_COMPANY_NOISE = {
+    "aps", "as", "ivs", "ps", "amba", "smba", "ks", "pmv",
+    "inc", "incorporated", "ltd", "limited", "llc", "plc", "corp", "corporation",
+    "gmbh", "ag", "ab", "oy", "oyj", "bv", "nv", "sa", "srl", "spa",
+    "holding", "holdings", "group", "groups", "danmark", "denmark", "dk",
+    "international", "intl", "global", "nordic", "scandinavia", "the",
+}
+# Title noise: articles/prepositions, generic vacancy words, and the m/f/d-style gender tags
+# common on Danish/German boards. Removed, and the rest sorted, so word-order and boilerplate
+# differences between two sources' phrasings of the same role collapse to one key.
+_TITLE_NOISE = {
+    "a", "an", "the", "and", "or", "for", "of", "to", "in", "with", "at", "on", "our",
+    "job", "jobs", "position", "role", "vacancy", "opening", "wanted", "soeges", "soges",
+    "m", "f", "d", "w", "x", "mfd", "mwd", "mw", "fm",
+}
+
+
+def _norm_company(name: str) -> str:
+    """Normalise an employer name for identity matching: lowercase, drop punctuation, and
+    strip legal-entity suffixes (ApS, A/S, GmbH, ...) and geo/holding words that vary by
+    source. 'Monta ApS', 'Monta A/S Danmark' and 'Monta' all reduce to 'monta'."""
+    toks = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split()
+    return "".join(t for t in toks if t and t not in _COMPANY_NOISE)
+
+
+def _norm_title_tokens(title: str) -> list:
+    """The SET of significant title tokens, sorted: punctuation and noise words removed so
+    word-order/boilerplate differences don't matter, but the tokens themselves are kept
+    distinct so genuinely different roles don't collapse."""
+    toks = re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).split()
+    return sorted({t for t in toks if t and t not in _TITLE_NOISE})
 
 
 def role_key(job: dict) -> str:
-    """A cross-source identity for the SAME role under different URLs: normalised
-    company + title (lowercased, alphanumerics only). Empty if either is missing, in which
-    case the caller falls back to the URL key alone. Deliberately simple: it collapses exact
-    company+title matches across sources; it won't catch minor wording differences (e.g.
-    'Monta' vs 'Monta ApS'), which is acceptable for a de-dup safety net."""
-    c = re.sub(r"[^a-z0-9]", "", (job.get("company") or "").lower())
-    t = re.sub(r"[^a-z0-9]", "", (job.get("title") or "").lower())
+    """A cross-source identity for the SAME role surfaced under different URLs by different
+    sources. Built from a normalised company (legal suffixes like ApS/A/S and geo/holding
+    words stripped) plus the SET of significant title tokens, SORTED — so word-order,
+    gender-tag (m/f/d) and boilerplate differences between two sources' phrasings collapse to
+    one key ('Student Assistant, Data' == 'Data Student Assistant' @ 'Monta' == 'Monta ApS').
+    Empty if either side is missing, in which case the caller falls back to the URL key alone.
+    Conservative by design: it collapses same-company + same-title-token-set roles and does
+    NOT fuzzy-merge different token sets ('Data Analyst Student' stays distinct from 'Data
+    Engineer Student'), so genuinely different roles at one employer are never lost."""
+    c = _norm_company(job.get("company") or "")
+    t = "".join(_norm_title_tokens(job.get("title") or ""))
     return f"{c}|{t}" if c and t else ""
 
 
@@ -393,9 +434,121 @@ def scrape_thehub(cutoff_date):
                 seen_urls.add(cu)
                 new_on_page += 1
                 yield t
-            if new_on_page == 0:            # nothing new -> assume end of results
-                break
+            if new_on_page == 0:
+                # All duplicates is NOT the end of results: seen_urls is shared across
+                # queries, so with sorting=mostPopular a later query's page 1 is often
+                # entirely roles already seen under an earlier query — page 2+ can still
+                # hold new ones. Only an EMPTY docs list (handled above) ends the query.
+                log.info(f"  [thehub] page {page_num}: all {len(docs)} already seen — continuing")
             time.sleep(random.uniform(0.5, 1.2))   # be polite
+
+# ---------------------------------------------------------------------------
+# STAGE 1: SCRAPE TEASERS — JOBNET (job.jobnet.dk, HTTP JSON API) — SCAFFOLD
+# ---------------------------------------------------------------------------
+
+def _jobnet_teaser(d: dict, cutoff_date):
+    """Map one Jobnet job object -> a teaser dict. FIELD NAMES ARE UNVERIFIED GUESSES from
+    Jobnet's historical API shape (Title/JobHeadline, HiringOrgName, WorkPlaceCity,
+    Presentation body, DetailsUrl). Before enabling, check ONE real object in devtools and
+    fix the pick() keys below — same drill as _thehub_teaser once had."""
+    if not isinstance(d, dict):
+        return None
+
+    def pick(*keys):
+        for k in keys:
+            v = d.get(k)
+            if v not in (None, "", [], {}):
+                return v
+        return ""
+
+    title = pick("Title", "JobHeadline", "title", "headline")
+    if not title:
+        return None
+    company = str(pick("HiringOrgName", "EmployerName", "company", "organisation"))
+    if company and any(x in company.lower() for x in EXCLUDED_COMPANIES):
+        return None
+    url = str(pick("DetailsUrl", "JobAdUrl", "Url", "url"))
+    if not url:
+        jid = pick("JobAnnouncementId", "Id", "id")
+        if jid:
+            url = f"https://job.jobnet.dk/CV/FindWork/Details/{jid}"
+    if not url:
+        return None
+
+    desc = _html_to_text(str(pick("Presentation", "Description", "Body", "description")))
+    pub = str(pick("PostingCreated", "PublishedDate", "published", "createdAt"))
+    published = "N/A"
+    d_parsed = _parse_date(pub)
+    if d_parsed is not None:
+        if d_parsed < cutoff_date:
+            return None
+        published = str(d_parsed)
+
+    teaser = {
+        "title": str(title).strip(),
+        "company": company.strip() or "N/A",
+        "location": str(pick("WorkPlaceCity", "WorkplaceCity", "city", "location")).strip() or "N/A",
+        "published_date": published,
+        "snippet": desc[:500],
+        "url": url.strip(),
+        "source_site": "jobnet",
+    }
+    if desc and len(desc) > 200:      # full body in the list response -> skip the fetch stage
+        teaser["_description"] = desc
+        teaser["source"] = "full"
+    return teaser
+
+
+def scrape_jobnet(cutoff_date):
+    """Source adapter: Jobnet (job.jobnet.dk), Denmark's public job board — covers publicly
+    funded employers that Jobindex/The Hub under-serve. DISABLED by default
+    (config.JOBNET_ENABLED): the JSON endpoint and field names MUST be confirmed once from a
+    real browser (steps in config.py) before this feeds the archive. Ships behind the source
+    seam so enabling it can never break the proven Jobindex/Hub paths."""
+    if not JOBNET_API_URL:
+        log.warning("  [jobnet] JOBNET_API_URL is empty -> skipping. Verify the endpoint per "
+                    "the steps in config.py, then set JOBNET_ENABLED/JOBNET_API_URL.")
+        return
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        "Accept": "application/json",
+        "Referer": "https://job.jobnet.dk/CV/FindWork",
+    }
+    seen_urls = set()
+    for term in (JOBNET_QUERIES or [""]):
+        log.info(f"--- [jobnet] query: {term!r} ---")
+        for page_i in range(JOBNET_MAX_PAGES):
+            params = {JOBNET_QUERY_PARAM: term,
+                      JOBNET_OFFSET_PARAM: page_i * JOBNET_PAGE_SIZE}
+            try:
+                r = requests.get(JOBNET_API_URL, params=params, headers=headers,
+                                 timeout=TIMEOUT_S)
+                r.raise_for_status()
+                data = r.json()
+            except Exception as e:
+                log.error(f"  [jobnet] request failed (term={term!r} offset="
+                          f"{page_i * JOBNET_PAGE_SIZE}): {str(e)[:160]}")
+                break
+            docs = _thehub_extract_list(data)   # generic docs/hits/results/items extractor
+            if not docs and isinstance(data, dict):
+                # Jobnet historically nested under "JobPositionPostings"
+                docs = data.get("JobPositionPostings") or []
+            if not docs:
+                if page_i == 0:
+                    log.warning(f"  [jobnet] no job list in response for term={term!r}. "
+                                f"Check JOBNET_API_URL / _jobnet_teaser keys.")
+                break
+            for d in docs:
+                t = _jobnet_teaser(d, cutoff_date)
+                if not t:
+                    continue
+                cu = canonical_url(t["url"])
+                if cu in seen_urls:
+                    continue
+                seen_urls.add(cu)
+                yield t
+            time.sleep(random.uniform(0.5, 1.2))
 
 # ---------------------------------------------------------------------------
 # SOURCE SEAM
@@ -409,6 +562,8 @@ def iter_sources(cutoff_date):
     sources = [("jobindex", _jobindex_teasers)]
     if THEHUB_ENABLED:
         sources.append(("thehub", scrape_thehub))
+    if JOBNET_ENABLED:
+        sources.append(("jobnet", scrape_jobnet))
 
     for name, fn in sources:
         try:
@@ -463,6 +618,13 @@ def _fetch_worker(task_q: "queue.Queue"):
                 break
             try:
                 job["_fetched"], job["_fetch_err"] = fetch_description(page, job["url"])
+                if not job["_fetched"]:
+                    # One retry before this role is condemned to snippet scoring (a
+                    # snippet-scored role is archived and never re-fetched, and its
+                    # danish_level is a guess without the body — so a retry is cheap
+                    # insurance against a transient timeout/interstitial).
+                    time.sleep(random.uniform(1.5, 3.0))
+                    job["_fetched"], job["_fetch_err"] = fetch_description(page, job["url"])
             except Exception as e:                      # fetch_description already guards,
                 job["_fetched"], job["_fetch_err"] = "", str(e)[:140]   # belt + suspenders
             time.sleep(random.uniform(0.6, 1.4))        # be polite -> avoid rate limiting
@@ -565,7 +727,9 @@ def _detect_lang(text: str):
 
 
 _DEADLINE_RE = re.compile(
-    r"(?:ans[øo]gningsfrist|frist|deadline)[:\s]*"
+    r"(?:ans[øo]gningsfrist|frist|deadline|ans[øo]g\s+senest|s[øo]g\s+senest|senest\s+den"
+    r"|apply\s+(?:by|before|no\s+later\s+than)|closing\s+date)"
+    r"[:\s]*(?:den\s+)?"
     r"(\d{1,2})[.\s/-]\s*(\d{1,2}|\w+)[.\s/-]\s*(\d{2,4})",
     re.IGNORECASE,
 )
@@ -624,7 +788,9 @@ SCORE_SCHEMA = {
                  "work_mode", "commute_ok", "danish_level", "reasoning"],
 }
 
-def score_job(job: dict, description: str) -> dict:
+def score_job(job: dict, description: str, model: str | None = None) -> dict:
+    """Score one job. `model` overrides config.MODEL (used by d_model_ab.py to compare
+    candidate models on identical inputs); default behaviour is unchanged."""
     prompt = f"""You are screening jobs for a candidate. Score the fit 0-100.
 There are TWO acceptable kinds of role.
 
@@ -633,6 +799,11 @@ TRACK A — technical / data role (preferred):
   automation, etc. Score by overlap with the candidate's skills and projects.
     85-100: technical role closely matching the skills/projects.
     60-84 : technical but only partial overlap, or borderline seniority.
+  "Technical" means SOFTWARE/DATA/IT technical. A role in an unrelated engineering or
+  science domain (mechanical, civil, electrical, chemical, construction, lab/clinical,
+  pharma QA, finance/audit, legal) scores <= 35 UNLESS its day-to-day tasks are
+  substantially programming, data or IT work matching the candidate's actual skills.
+  Do not award points for the word "engineer" or "analyst" alone.
 
 TRACK B — foot-in-the-door role AT a tech company:
   office assistant, reception, front desk, workplace/facilities, logistics,
@@ -664,6 +835,9 @@ ALSO extract:
                           "preferred" : Danish is a plus / nice-to-have / an advantage, but not
                                         mandatory; English is enough to do the job.
                           "none"      : no Danish needed (English-only is fine, or not mentioned).
+                        If the ad is written ENTIRELY in Danish and never states that English
+                        is sufficient, grade at least "preferred"; if it is clearly a
+                        Danish-speaking customer/user/citizen-facing role, grade "required".
                         Does NOT affect the score; it is a flag for the candidate.
   - "deadline"        : application deadline as "YYYY-MM-DD" if clearly stated, else "".
 
@@ -682,11 +856,16 @@ Respond with ONLY a JSON object, no markdown fences, no other text, exactly like
 {{"score": 0-100, "track": "A"|"B"|"none", "is_tech_company": true|false, "employment_type": "student"|"part_time"|"full_time"|"internship"|"unknown", "work_mode": "onsite"|"hybrid"|"remote"|"unknown", "location": "city"|"", "commute_ok": true|false, "danish_level": "none"|"preferred"|"required", "deadline": "YYYY-MM-DD"|"", "reasoning": "one sentence", "matched_skills": ["skill", "skill"]}}"""
 
     payload = {
-        "model": MODEL,
+        "model": model or MODEL,
         "prompt": prompt,
         "stream": False,
         "format": SCORE_SCHEMA,  # schema-constrained output (was plain "json")
-        "think": False,          # qwen3.6 is a reasoning model: keep output in `response`
+        # Reasoning-capable models (Gemma 4, Qwen 3.6): keep thinking OFF for scoring — the
+        # schema constraint + low temperature does the work, and thinking multiplies latency
+        # across hundreds of calls. NOTE (Gemma 4): with thinking disabled the larger models
+        # may still emit an EMPTY thought block before the JSON; the parser's {...} fallback
+        # in _parse_score handles it.
+        "think": False,
         "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": 400},
     }
     try:
@@ -824,8 +1003,13 @@ def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
 
 ARCHIVE_FIELDS = ["scraped_date", "title", "company", "location", "published_date",
                   "url", "track", "score", "employment_type", "work_mode", "commute_ok",
-                  "danish_level", "is_tech_company", "deadline", "matched_skills",
-                  "source", "reasoning"]
+                  "danish_level", "ad_language", "is_tech_company", "deadline",
+                  "matched_skills", "source", "reasoning"]
+# ad_language: the ad's detected WRITING language ("da"/"en"/"sv"/"no"/"" = undetected),
+# set deterministically by _detect_lang at scoring time — separate from danish_level, which
+# is the LLM's judgement of how much Danish the ROLE requires. Rows scored before this
+# column existed have it blank (migrate_archive_if_needed leaves new columns empty);
+# `python a_scrape.py --rescore` refreshes still-open shortlist rows with blank flags.
 
 def load_seen_urls(path: str) -> set:
     """Return the set of CANONICAL URLs already in the archive, so a role already scored
@@ -836,13 +1020,31 @@ def load_seen_urls(path: str) -> set:
         return {canonical_url(row["url"]) for row in csv.DictReader(f) if row.get("url")}
 
 
-def migrate_archive_if_needed(path: str) -> bool:
-    """If the archive exists but its header doesn't match ARCHIVE_FIELDS (e.g. a column was
-    added, removed, or reordered), rewrite it in place under the current schema BEFORE any
-    append: existing values are kept by column NAME, new columns filled blank, unknown columns
-    dropped. This stops the silent column-shift corruption a bare append would otherwise cause.
-    Returns True if it migrated. NOTE: it cannot un-scramble rows already corrupted by an
-    earlier mismatched append -- for that, rebuild the archive from scratch (see README)."""
+def load_seen_role_keys(path: str) -> set:
+    """Cross-source de-dup ACROSS RUNS: the set of role_key fingerprints already in the
+    archive. Catches the SAME ad re-surfacing later under a different source/URL — a new
+    canonical URL that load_seen_urls alone would miss — so it isn't fetched and re-scored as
+    if new. Blank keys (missing company/title) are skipped so they never collapse unrelated
+    rows. Conservative fingerprint (see role_key): only same-company + same-title-token-set
+    roles match, so distinct roles at one employer stay distinct."""
+    if not os.path.isfile(path):
+        return set()
+    keys = set()
+    with open(path, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            k = role_key(row)
+            if k:
+                keys.add(k)
+    return keys
+
+
+def migrate_csv_if_needed(path: str, fields: list) -> bool:
+    """If a CSV exists but its header doesn't match `fields` (a column was added, removed, or
+    reordered), rewrite it in place under the current schema BEFORE any append: existing
+    values are kept by column NAME, new columns filled blank, unknown columns dropped. This
+    stops the silent column-shift corruption a bare append would otherwise cause. Used for
+    both the archive and runs.csv. Returns True if it migrated. NOTE: it cannot un-scramble
+    rows already corrupted by an earlier mismatched append -- rebuild from scratch for that."""
     if not os.path.isfile(path):
         return False
     with open(path, newline="", encoding="utf-8") as f:
@@ -850,22 +1052,24 @@ def migrate_archive_if_needed(path: str) -> bool:
             header = next(csv.reader(f))
         except StopIteration:
             return False
-    if header == ARCHIVE_FIELDS:
+    if header == fields:
         return False
     with open(path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     tmp = path + ".tmp"
     with open(tmp, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=ARCHIVE_FIELDS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            w.writerow({k: r.get(k, "") for k in ARCHIVE_FIELDS})
+            w.writerow({k: r.get(k, "") for k in fields})
     os.replace(tmp, path)
-    log.warning(f"Archive schema changed -> migrated {len(rows)} rows in "
-                f"{os.path.basename(path)} to the current columns (new columns left blank). "
-                f"If some older rows now look wrong, they were corrupted by a pre-migration "
-                f"append; rebuild from scratch (see README).")
+    log.warning(f"Schema changed -> migrated {len(rows)} rows in {os.path.basename(path)} "
+                f"to the current columns (new columns left blank).")
     return True
+
+
+def migrate_archive_if_needed(path: str) -> bool:
+    return migrate_csv_if_needed(path, ARCHIVE_FIELDS)
 
 def _row_from(job: dict) -> dict:
     """Project a scored job onto ARCHIVE_FIELDS; join list fields (matched_skills)."""
@@ -916,11 +1120,16 @@ class ArchiveWriter:
 
 RUNS_FIELDS = ["run_ts", "duration_s", "scrape_s", "fetch_gate_s", "score_s",
                "teasers", "prefiltered", "danish_early", "danish_body",
-               "deadline_dropped", "fetched", "scored", "errors", "matches"]
+               "deadline_dropped", "fetched", "snippet_fallback", "scored",
+               "errors", "matches"]
+# snippet_fallback: roles whose page fetch failed (after a retry) and were scored on the
+# teaser only. Watch this column: a spike means Jobindex/ATS fetching broke, which silently
+# degrades BOTH match quality and danish_level accuracy.
 
 def _log_run(run_start, total_s, timings, funnel):
     """Append one row per run to runs.csv: when it ran, how long each stage took, and the
     funnel counts. This is the longitudinal 'runs' table that analyze.py can summarize."""
+    migrate_csv_if_needed(RUNS_LOG, RUNS_FIELDS)   # header changed? realign before appending
     new = not os.path.isfile(RUNS_LOG)
     row = {
         "run_ts": run_start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -967,14 +1176,27 @@ def role_open_status(row, today=None, fresh_days=None):
     return (True, None)  # no dates at all -> don't hide it
 
 
-def open_shortlist(archive_path: str) -> list:
-    """The actionable shortlist: from the full archive, dedup by CANONICAL URL (highest score),
-    keep roles that pass the score / employment-type / commute filters and are still open, and
-    sort by urgency (soonest deadline first) then score. Each row gets r["_days_left"].
-    Shared by write_report and c_prepare so item numbering is identical."""
+def _pick_latest(cur, r):
+    """True if row r should supersede cur under latest-scored-wins (tiebreak: higher score)."""
+    if cur is None:
+        return True
+    return (r.get("scraped_date") or "", r["score"]) > ((cur.get("scraped_date") or ""),
+                                                         cur["score"])
+
+
+def _dedup_archive(archive_path: str) -> list:
+    """The archive reduced to one row per real role, MOST RECENTLY SCORED wins (tiebreak:
+    higher score). Latest-wins matters: a re-scored role (via --rescore, or a prompt/model
+    change) must supersede its older row, which highest-wins would not guarantee.
+
+    Two passes: (1) collapse by canonical URL (tracking params stripped); then (2) collapse
+    what survives by role_key fingerprint, so the SAME ad that entered the archive under two
+    different sources' URLs (e.g. a company ATS link via Jobindex and the clean The Hub link)
+    shows ONCE in every view built on this — the shortlist, b_analyze, c_prepare numbering and
+    d_model_ab. The archive file itself is never rewritten; this is comparison-time only."""
     if not os.path.isfile(archive_path):
         return []
-    best = {}  # de-dup by canonical url, keeping the highest score
+    best = {}
     with open(archive_path, encoding="utf-8") as f:
         for r in csv.DictReader(f):
             try:
@@ -982,33 +1204,69 @@ def open_shortlist(archive_path: str) -> list:
             except ValueError:
                 r["score"] = 0
             u = canonical_url(r.get("url", ""))
-            if u and (u not in best or r["score"] > best[u]["score"]):
+            if not u:
+                continue
+            if _pick_latest(best.get(u), r):
                 best[u] = r
-
-    today_d = datetime.now().date()
-    open_matches = []
+    # Pass 2: fold cross-source URL variants of one role together by fingerprint. Rows with a
+    # blank fingerprint (missing company/title) can't be matched safely, so they pass through.
+    by_rk, passthrough = {}, []
     for r in best.values():
+        rk = role_key(r)
+        if not rk:
+            passthrough.append(r)
+            continue
+        if _pick_latest(by_rk.get(rk), r):
+            by_rk[rk] = r
+    return list(by_rk.values()) + passthrough
+
+
+def shortlist_with_reasons(archive_path: str):
+    """(kept, dropped) — the open shortlist plus a Counter of why each deduped archive row
+    was excluded. The reasons are what b_analyze reports, so 'why isn't X showing?' is
+    answerable without re-reading the filter code."""
+    from collections import Counter
+    dropped = Counter()
+    today_d = datetime.now().date()
+    kept = []
+    for r in _dedup_archive(archive_path):
         if r["score"] < SCORE_THRESHOLD:
+            dropped["score below threshold"] += 1
             continue
         if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
+            dropped["employment type not targeted"] += 1
             continue
         if REQUIRE_COMMUTABLE and str(r.get("commute_ok", "true")).lower() == "false":
+            dropped["not commutable"] += 1
             continue
         if EXCLUDE_DANISH_REQUIRED and str(r.get("danish_level", "")).lower() == "required":
+            dropped["danish required (hidden by filter)"] += 1
+            continue
+        if EXCLUDE_DANISH_ADS and str(r.get("ad_language", "")).lower() == "da":
+            dropped["ad written in Danish (hidden by filter)"] += 1
+            continue
+        if r.get("track") == "B" and r["score"] < TRACK_B_MIN_SCORE:
+            dropped[f"track B below its own bar ({TRACK_B_MIN_SCORE})"] += 1
             continue
         is_open, days_left = role_open_status(r, today_d)
         if not is_open:
+            dropped["closed / aged out"] += 1
             continue
         r["_days_left"] = days_left
-        open_matches.append(r)
+        kept.append(r)
 
     # urgency first (known deadline, soonest), then score
-    return sorted(
-        open_matches,
-        key=lambda r: (r["_days_left"] is None,
-                       r["_days_left"] if r["_days_left"] is not None else 0,
-                       -r["score"]),
-    )
+    kept.sort(key=lambda r: (r["_days_left"] is None,
+                             r["_days_left"] if r["_days_left"] is not None else 0,
+                             -r["score"]))
+    return kept, dropped
+
+
+def open_shortlist(archive_path: str) -> list:
+    """The actionable shortlist: deduped archive rows passing the score / type / commute /
+    Danish / track-B / still-open filters, sorted by urgency then score. Each row gets
+    r["_days_left"]. Shared by write_report, b_analyze and c_prepare so numbering is identical."""
+    return shortlist_with_reasons(archive_path)[0]
 
 
 def write_report(report_path: str, archive_path: str):
@@ -1048,6 +1306,11 @@ def write_report(report_path: str, archive_path: str):
                 meta.append("⚠ Danish required")
             elif dlvl == "preferred":
                 meta.append("Danish a plus")
+            elif dlvl == "":
+                # scored before danish_level/ad_language existed -> flags unreliable
+                meta.append("⚠ flags unknown (old scoring — run a_scrape.py --rescore)")
+            if str(j.get("ad_language", "")).lower() == "da":
+                meta.append("ad in Danish")
             dl = j.get("deadline")
             dl = dl if _parse_date(dl) else ""   # ignore non-date junk (e.g. a stray bool)
             days_left = j.get("_days_left")
@@ -1070,6 +1333,67 @@ def write_report(report_path: str, archive_path: str):
             f.write(f"**Why:** {j.get('reasoning', '')}\n\n---\n\n")
     log.info(f"Wrote {len(matches)} matches -> {report_path}")
 
+def rescore_missing_flags(limit: int = 40):
+    """Maintenance mode (`python a_scrape.py --rescore`): rows scored before the
+    danish_level / ad_language columns existed have those flags BLANK, so they slip past the
+    Danish view filters and show '⚠ flags unknown' in the report. This re-fetches and
+    re-scores the still-relevant ones (score >= threshold, targeted type, still open) and
+    appends fresh rows; latest-wins de-dup then makes the new scoring supersede the old rows
+    everywhere. Capped at `limit` per invocation to bound runtime."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_d = datetime.now().date()
+    stale = []
+    for r in _dedup_archive(MASTER_ARCHIVE):
+        if r["score"] < SCORE_THRESHOLD:
+            continue
+        if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
+            continue
+        if not role_open_status(r, today_d)[0]:
+            continue
+        if r.get("danish_level", "") and r.get("ad_language", "") != "":
+            continue                       # flags already present -> nothing to fix
+        stale.append(r)
+    if not stale:
+        log.info("--rescore: no open shortlist-relevant rows with missing flags. Done.")
+        return
+    if len(stale) > limit:
+        log.info(f"--rescore: {len(stale)} rows need flags; doing the first {limit} "
+                 f"(run again for the rest).")
+        stale = stale[:limit]
+    log.info(f"--rescore: re-fetching + re-scoring {len(stale)} rows...")
+
+    jobs = []
+    for r in stale:
+        jobs.append({"title": r.get("title", ""), "company": r.get("company", ""),
+                     "location": r.get("location", "N/A"),
+                     "published_date": r.get("published_date", "N/A"),
+                     "snippet": "", "url": r.get("url", ""),
+                     "source_site": r.get("source", "")})
+    fetch_all(jobs)
+
+    with ArchiveWriter(MASTER_ARCHIVE) as archive:
+        for job in jobs:
+            desc = job.pop("_fetched", "")
+            job.pop("_fetch_err", "")
+            if not desc:
+                log.warning(f"  --rescore: fetch failed, skipping {job['url']}")
+                continue
+            job["source"] = "full"
+            res = score_job(job, desc)
+            if res["reasoning"] == "scoring error":
+                log.warning(f"  --rescore: scoring failed, skipping {job['title']!r}")
+                continue
+            job.update(res)
+            job["ad_language"] = _detect_lang(desc[:2000]) or ""
+            if job["ad_language"] == "da" and job.get("danish_level") == "none":
+                job["danish_level"] = "preferred"
+            job["scraped_date"] = today
+            archive.write(job)
+            print(f"  re-scored [{job['score']:>3}] {job['title']} @ {job['company']} "
+                  f"(danish={job['danish_level']}, ad={job['ad_language'] or '?'})")
+        log.info(f"--rescore: appended {archive.count} refreshed rows.")
+    write_report(MARKDOWN_REPORT, MASTER_ARCHIVE)
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -1087,24 +1411,30 @@ def main():
              + ("(owner; persisting to the main data dirs)" if IS_OWNER
                 else f"(sandboxed -> {BASE_DIR}; nothing is written to your own data)"))
     cutoff = datetime.now().date() - timedelta(days=MAX_DAYS_OLD)
-    seen = load_seen_urls(MASTER_ARCHIVE)        # CANONICAL urls already in the archive
+    seen = load_seen_urls(MASTER_ARCHIVE)            # CANONICAL urls already in the archive
+    seen_role_keys = load_seen_role_keys(MASTER_ARCHIVE)  # role fingerprints already scored
     today = datetime.now().strftime("%Y-%m-%d")
 
     fresh, survivors = [], []
-    seen_role_keys = set()                       # cross-source (company+title) de-dup, this run
+    dup_url = dup_role = 0                        # de-dup counters, for the log
     by_site = {}                                 # teaser counts per source, for the log
 
     # Stage 1 — scrape from every enabled source (each isolated in iter_sources).
-    #   De-dup twice: (a) canonical URL against the archive + this run, and
-    #                 (b) normalised company+title across sources this run.
+    #   De-dup on two keys, each spanning THIS run AND the whole archive:
+    #     (a) canonical URL      — same link (tracking params stripped) already seen.
+    #     (b) role_key fingerprint — the SAME ad under a DIFFERENT source's URL (normalised
+    #         company + sorted title tokens), which the URL key alone can't catch. This is
+    #         what collapses "same job, two boards, two links" across sources and across runs.
     for job in iter_sources(cutoff):
         cu = canonical_url(job.get("url", ""))
         if not cu:
             continue
         if cu in seen:                           # already scored (any source/URL variant)
+            dup_url += 1
             continue
         rk = role_key(job)
-        if rk and rk in seen_role_keys:          # same role from another source this run
+        if rk and rk in seen_role_keys:          # same ad, different source/URL (or another run)
+            dup_role += 1
             continue
         seen.add(cu)
         if rk:
@@ -1112,17 +1442,25 @@ def main():
         by_site[job.get("source_site", "?")] = by_site.get(job.get("source_site", "?"), 0) + 1
         fresh.append(job)
     log.info(f"Stage 1: {len(fresh)} fresh teasers "
-             + (", ".join(f"{k}={v}" for k, v in by_site.items()) or "(none)"))
+             + (", ".join(f"{k}={v}" for k, v in by_site.items()) or "(none)")
+             + f"  (skipped {dup_url} seen-URL, {dup_role} cross-source/prior-run duplicates)")
 
     # Stage 2 — free pre-filter. Jobindex teasers carry a real snippet, so the full
-    # INCLUDE/EXCLUDE keyword filter applies. The Hub LIST endpoint has no snippet body, so an
-    # INCLUDE check would be title-only and overly strict; for that source apply only the
-    # EXCLUDE-title guard (drop obvious HR/marketing) and let the LLM score the rest -- the
-    # board is already tech/startup-curated and its volume is low.
+    # INCLUDE/EXCLUDE keyword filter applies. Sources that deliver the FULL body with the
+    # teaser (The Hub) get the same INCLUDE check run over title+body — previously they
+    # skipped INCLUDE entirely, which let broad Hub queries flood the LLM with unrelated
+    # roles and was a main driver of junk matches. Only a body-less teaser from a non-snippet
+    # source falls back to the lenient EXCLUDE-title-only guard.
     def _keep_candidate(j):
         if j.get("source_site") == "thehub":
             title = f" {j['title']} ".lower()
-            return not any(term in title for term in EXCLUDE_TERMS)
+            if any(term in title for term in EXCLUDE_TERMS):
+                return False
+            body = j.get("_description", "")
+            if body:  # full body available -> require a real INCLUDE hit like any other ad
+                text = f" {j['title']} {body[:2500]} ".lower()
+                return any(term in text for term in INCLUDE_TERMS)
+            return True  # no body to judge -> keep, the LLM decides
         return passes_prefilter(j)
     candidates = [j for j in fresh if _keep_candidate(j)]
     log.info(f"Stage 2: {len(candidates)} passed keyword pre-filter")
@@ -1211,8 +1549,18 @@ def main():
     # ordered-by-completion and single-threaded (ArchiveWriter is locked regardless).
     # Each row is still written + flushed immediately, so an interruption keeps finished work.
     def _score_worker(job):
-        res = score_job(job, job.pop("_description"))
+        desc = job.pop("_description")
+        res = score_job(job, desc)
         job.update(res)
+        # Deterministic ad WRITING language (independent of the LLM's danish_level, which is
+        # the ROLE's requirement). Feeds the EXCLUDE_DANISH_ADS view filter + report flag.
+        job["ad_language"] = _detect_lang(desc[:2000]) or ""
+        # Belt-and-braces: an ad written entirely in Danish where the model still said the
+        # role needs NO Danish is almost always an under-grade -> lift to "preferred" so the
+        # flag (and the danish_level filter, if strict) errs on the honest side.
+        if job["ad_language"] == "da" and job.get("danish_level") == "none" \
+                and job.get("reasoning") != "scoring error":
+            job["danish_level"] = "preferred"
         job["scraped_date"] = today
         return job
 
@@ -1250,6 +1598,7 @@ def main():
         "teasers": len(fresh), "prefiltered": len(candidates),
         "danish_early": drop["danish_early"], "danish_body": drop["danish"],
         "deadline_dropped": drop["deadline"], "fetched": len(to_fetch),
+        "snippet_fallback": fallback,
         "scored": archive.count, "errors": errors, "matches": len(matches),
     })
     log.info(f"Done in {total_s:.1f}s "
