@@ -341,14 +341,20 @@ JOBNET_QUERIES    = ["studentermedhjælper it", "studentermedhjælper data",
 # Entry format: "provider:slug"  or  "provider:slug|Display Name".
 ATS_ENABLED   = True
 ATS_COMPANIES = [
-    # --- YOUR target-employer list. Verified DK-office Greenhouse boards to start; edit freely.
+    # --- YOUR target-employer list. These three are companies that ALREADY produced high-fit
+    #     matches in past scrapes AND run a public Greenhouse board (verified live 2026-07-05:
+    #     Trustpilot 61 / Wolt 20 DK / Too Good To Go 18 DK). Edit freely.
     "greenhouse:trustpilot|Trustpilot",
     "greenhouse:wolt|Wolt",
+    "greenhouse:toogoodtogo|Too Good To Go",
     # More to uncomment (remote-heavy — more reach, more noise):
     # "greenhouse:remotecom|Remote",
     # "greenhouse:gitlab|GitLab",
     # Lever example (confirm the slug returns a JSON array first):
     # "lever:<slug>|<Company>",
+    # NOTE: most Danish employers use Teamtailor / HR-ON, not Greenhouse/Lever, and those have
+    # no public per-company API — so this watchlist stays small on purpose. Jobindex + The Hub
+    # remain the volume sources; this is a precision supplement for a few named employers.
 ]
 # Keep only roles whose location matches one of these (case-insensitive substring) so a big
 # global board can't flood scoring with non-commutable roles. Empty list = keep everything.
