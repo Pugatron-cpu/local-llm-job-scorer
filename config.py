@@ -325,6 +325,36 @@ JOBNET_MAX_PAGES  = 3
 JOBNET_QUERIES    = ["studentermedhjælper it", "studentermedhjælper data",
                      "student assistant data", "it support student"]
 
+# --- source: ATS watchlist (Greenhouse / Lever public career APIs) --------------------
+# Poll the PUBLIC job APIs of a hand-picked list of companies you'd actually want to work at.
+# No auth, no scraping — these are the same JSON endpoints the companies' own career pages
+# call. High precision (YOU choose the employers) and it catches roles that never reach
+# Jobindex/The Hub. Roles still flow through the same prefilter + LLM scoring + dedup.
+# VERIFIED live 2026-07-05: Greenhouse returns {"jobs":[...]} with the HTML body inline when
+# content=true; Lever returns a JSON array.
+#
+# Find a company's slug from its careers page and TEST it before adding:
+#   Greenhouse -> boards.greenhouse.io/<slug> (or job links carry ?gh_jid=)
+#                 curl https://boards-api.greenhouse.io/v1/boards/<slug>/jobs   (200 + JSON = good)
+#   Lever      -> jobs.lever.co/<slug>
+#                 curl 'https://api.lever.co/v0/postings/<slug>?mode=json'
+# Entry format: "provider:slug"  or  "provider:slug|Display Name".
+ATS_ENABLED   = True
+ATS_COMPANIES = [
+    # --- YOUR target-employer list. Verified DK-office Greenhouse boards to start; edit freely.
+    "greenhouse:trustpilot|Trustpilot",
+    "greenhouse:wolt|Wolt",
+    # More to uncomment (remote-heavy — more reach, more noise):
+    # "greenhouse:remotecom|Remote",
+    # "greenhouse:gitlab|GitLab",
+    # Lever example (confirm the slug returns a JSON array first):
+    # "lever:<slug>|<Company>",
+]
+# Keep only roles whose location matches one of these (case-insensitive substring) so a big
+# global board can't flood scoring with non-commutable roles. Empty list = keep everything.
+ATS_LOCATION_KEEP = ["denmark", "danmark", "københ", "copenhagen", "kbh",
+                     "aarhus", "odense", "aalborg", "remote"]
+
 # --- load the active profile (EVERY run, owner included) -----------------------------
 # All personal settings come from profiles/<name>.toml — the owner's too, so no personal
 # data lives in tracked code. Engine knobs and term lists stay shared unless the profile
@@ -340,6 +370,8 @@ if _prof.get("queries"):
     TARGET_QUERIES = [str(q) for q in _prof["queries"]]
 if _prof.get("thehub_queries"):
     THEHUB_QUERIES = [str(q) for q in _prof["thehub_queries"]]
+if "ats_companies" in _prof:            # per-person target-employer watchlist (may be [])
+    ATS_COMPANIES = [str(x) for x in _prof["ats_companies"]]
 if _prof.get("excluded_companies"):
     EXCLUDED_COMPANIES = [str(x).lower() for x in _prof["excluded_companies"]]
 if "require_commutable" in _prof:

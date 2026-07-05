@@ -40,6 +40,7 @@ import os
 import csv
 import re
 import json
+import html
 import time
 import random
 import logging
@@ -551,6 +552,148 @@ def scrape_jobnet(cutoff_date):
             time.sleep(random.uniform(0.5, 1.2))
 
 # ---------------------------------------------------------------------------
+# SOURCE: ATS WATCHLIST (Greenhouse / Lever public career APIs)
+# ---------------------------------------------------------------------------
+# Instead of a keyword board, poll the PUBLIC job APIs of a hand-picked list of companies
+# (config.ATS_COMPANIES). No auth, no scraping — these are the same JSON endpoints the
+# companies' own career pages call. High precision (you choose the employers) and it surfaces
+# roles that never reach Jobindex/The Hub. Each entry is "provider:slug" (optionally
+# "provider:slug|Display Name"); provider is greenhouse or lever. Verified live 2026-07-05.
+
+_ATS_HEADERS = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+                "Accept": "application/json"}
+
+
+def _parse_ats_entry(entry: str):
+    """'greenhouse:trustpilot' or 'greenhouse:trustpilot|Trustpilot' -> (provider, slug,
+    display). Missing display is prettified from the slug."""
+    spec, _, disp = str(entry).partition("|")
+    provider, _, slug = spec.strip().partition(":")
+    provider, slug, disp = provider.strip().lower(), slug.strip(), disp.strip()
+    if not disp:
+        disp = slug.replace("-", " ").replace("_", " ").strip().title()
+    return provider, slug, disp
+
+
+def _ats_location_ok(loc: str) -> bool:
+    """Keep only teasers whose location matches one of ATS_LOCATION_KEEP (case-insensitive
+    substring), so a big global board can't dump non-commutable roles into scoring. Empty
+    keep-list = keep everything."""
+    if not ATS_LOCATION_KEEP:
+        return True
+    loc = (loc or "").lower()
+    return any(k.lower() in loc for k in ATS_LOCATION_KEEP)
+
+
+def _ats_teaser(title, company, location, url, body, published, cutoff_date):
+    """Shared teaser builder + location/company/freshness gate for both ATS providers.
+    Returns a teaser dict, or None to drop the role. A substantial body arrives inline
+    (source='full') so the fetch stage is skipped, same as The Hub."""
+    title = (title or "").strip()
+    url = (url or "").strip()
+    if not title or not url:
+        return None
+    if not _ats_location_ok(location):
+        return None
+    if company and any(x in company.lower() for x in EXCLUDED_COMPANIES):
+        return None
+    pub = "N/A"
+    d_parsed = _parse_date(published)
+    if d_parsed is not None:
+        if d_parsed < cutoff_date:
+            return None
+        pub = str(d_parsed)
+    body = (body or "").strip()
+    teaser = {
+        "title": title,
+        "company": (company or "N/A").strip() or "N/A",
+        "location": (location or "N/A").strip() or "N/A",
+        "published_date": pub,
+        "snippet": body[:500],
+        "url": url,
+        "source_site": "ats",
+    }
+    if body and len(body) > 200:
+        teaser["_description"] = body
+        teaser["source"] = "full"
+    return teaser
+
+
+def _greenhouse_jobs(slug, display, cutoff_date):
+    """Greenhouse job-board API: {"jobs":[{title, location:{name}, absolute_url, updated_at,
+    content}]}. content=true returns the (HTML-escaped) body inline."""
+    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
+    r = requests.get(url, params={"content": "true"}, headers=_ATS_HEADERS, timeout=TIMEOUT_S)
+    r.raise_for_status()
+    for j in (r.json().get("jobs") or []):
+        body = _html_to_text(html.unescape(j.get("content") or ""))
+        t = _ats_teaser(title=j.get("title"), company=display,
+                        location=(j.get("location") or {}).get("name", ""),
+                        url=j.get("absolute_url"), body=body,
+                        published=(j.get("updated_at") or "")[:10], cutoff_date=cutoff_date)
+        if t:
+            yield t
+
+
+def _lever_jobs(slug, display, cutoff_date):
+    """Lever postings API (?mode=json): a JSON ARRAY of {text, categories:{location},
+    hostedUrl, descriptionPlain, createdAt(epoch ms)}."""
+    url = f"https://api.lever.co/v0/postings/{slug}"
+    r = requests.get(url, params={"mode": "json"}, headers=_ATS_HEADERS, timeout=TIMEOUT_S)
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, list):
+        return
+    for p in data:
+        if not isinstance(p, dict):
+            continue
+        created = p.get("createdAt")
+        pub = ""
+        if isinstance(created, (int, float)):
+            pub = datetime.fromtimestamp(created / 1000).strftime("%Y-%m-%d")
+        body = p.get("descriptionPlain") or _html_to_text(p.get("description") or "")
+        t = _ats_teaser(title=p.get("text"), company=display,
+                        location=(p.get("categories") or {}).get("location", ""),
+                        url=p.get("hostedUrl"), body=body,
+                        published=pub, cutoff_date=cutoff_date)
+        if t:
+            yield t
+
+
+def scrape_ats(cutoff_date):
+    """Source adapter: poll the public career APIs of config.ATS_COMPANIES. Each company is
+    isolated (a wrong slug or a provider hiccup just logs and skips that one company), so this
+    can never take down the run. Dedups within the source on the canonical url."""
+    if not ATS_COMPANIES:
+        log.warning("  [ats] ATS_COMPANIES is empty -> skipping. Add 'greenhouse:<slug>' / "
+                    "'lever:<slug>' entries in config.py.")
+        return
+    providers = {"greenhouse": _greenhouse_jobs, "lever": _lever_jobs}
+    seen = set()
+    for entry in ATS_COMPANIES:
+        provider, slug, disp = _parse_ats_entry(entry)
+        fn = providers.get(provider)
+        if not fn or not slug:
+            log.warning(f"  [ats] bad entry {entry!r} (want 'greenhouse:slug' or "
+                        f"'lever:slug') -> skip")
+            continue
+        log.info(f"--- [ats] {provider}:{slug} ({disp}) ---")
+        try:
+            kept = 0
+            for t in fn(slug, disp, cutoff_date):
+                cu = canonical_url(t["url"])
+                if cu in seen:
+                    continue
+                seen.add(cu)
+                kept += 1
+                yield t
+            log.info(f"  [ats] {slug}: kept {kept} role(s) after location/freshness filter")
+        except Exception as e:
+            log.error(f"  [ats] {provider}:{slug} failed and was skipped: {str(e)[:160]}")
+        time.sleep(random.uniform(0.3, 0.8))
+
+# ---------------------------------------------------------------------------
 # SOURCE SEAM
 # ---------------------------------------------------------------------------
 
@@ -564,6 +707,8 @@ def iter_sources(cutoff_date):
         sources.append(("thehub", scrape_thehub))
     if JOBNET_ENABLED:
         sources.append(("jobnet", scrape_jobnet))
+    if ATS_ENABLED:
+        sources.append(("ats", scrape_ats))
 
     for name, fn in sources:
         try:

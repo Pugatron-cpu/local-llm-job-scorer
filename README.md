@@ -1,9 +1,10 @@
 # Job Search Pipeline
 
-A local, privacy-preserving job-search tool: scrapes Jobindex and The Hub (plus an optional
-Jobnet scaffold), scores roles against a profile with a local LLM (Ollama; model set by
-`MODEL` in `config.py`), de-duplicates across sources, and keeps an actionable, status-aware
-shortlist of currently-open matches.
+A local, privacy-preserving job-search tool: pulls roles from Jobindex, The Hub, and a
+watchlist of companies' public career APIs (plus an optional Jobnet scaffold), scores them
+against a profile with a local LLM (Ollama; model set by `MODEL` in `config.py`),
+de-duplicates across sources, and keeps an actionable, status-aware shortlist of
+currently-open matches.
 
 Built end-to-end with Claude Code. It runs entirely on local hardware: the scoring model is
 served by a local Ollama instance, so job data and the candidate profile never leave the machine.
@@ -73,8 +74,15 @@ same teaser shape and is isolated, so one failing source can't take down the run
 - **The Hub** (`thehub.io`, on) — Nordic startup/scaleup board, English-first and tech-heavy.
   Hits the JSON search API directly (`THEHUB_ENABLED = True`, endpoint verified 2026-06-25). To
   turn it off, set `THEHUB_ENABLED = False`.
-- **Jobnet** (`jobnet.dk`, off) — scaffold for Denmark's public job board, shipped disabled
-  (`JOBNET_ENABLED = False`) until its endpoint/field names are confirmed; see `config.py`.
+- **ATS watchlist** (`greenhouse.io` / `lever.co`, on) — polls the **public career APIs of a
+  hand-picked list of companies** you'd actually want to work at (`ATS_COMPANIES` in
+  `config.py`, or `ats_companies` in your toml). No auth, no scraping; high precision, and it
+  surfaces roles that never hit Jobindex/The Hub. A location filter (`ATS_LOCATION_KEEP`) keeps
+  a big global board from flooding scoring with non-commutable roles. Add a company by testing
+  its slug: `curl https://boards-api.greenhouse.io/v1/boards/<slug>/jobs`.
+- **Jobnet** (`jobnet.dk`, off) — scaffold for Denmark's public job board. Left disabled: as of
+  2026-07 its search API sits behind a StarPlatform (MitID) login, so there is no public
+  keyword search to use; see the note in `config.py`.
 
 The same role from two sources is collapsed by a **canonical URL** key plus a normalised
 company+title fallback, and that key links archive rows to the tracker.
@@ -107,6 +115,8 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
 - `SCORE_THRESHOLD`, `TARGET_QUERIES`, `MODEL`.
 - `THEHUB_*` — The Hub source (on; endpoint verified). `JOBNET_*` — Jobnet scaffold (off).
+- `ATS_COMPANIES` — your target-employer watchlist (`"greenhouse:<slug>"` / `"lever:<slug>"`);
+  `ATS_LOCATION_KEEP` — locations to keep. `ATS_ENABLED` toggles the whole source.
 
 The employment-type and commute filters are **views**: every role is scored on merit and
 stored regardless, so changing a filter re-surfaces matching roles without re-scoring.

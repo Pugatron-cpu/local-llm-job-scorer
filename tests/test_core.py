@@ -306,5 +306,71 @@ class StatusTracker(unittest.TestCase):
         self.assertIsNone(e_status._date("not-a-date"))
 
 
+class AtsWatchlist(unittest.TestCase):
+    """The ATS source (Greenhouse/Lever): entry parsing, location gate, and the shared teaser
+    builder. Pure logic — the HTTP fetch itself is not unit-tested (it's I/O)."""
+    from datetime import date
+    CUTOFF = date(2026, 6, 1)
+
+    def test_parse_entry(self):
+        self.assertEqual(core._parse_ats_entry("greenhouse:trustpilot"),
+                         ("greenhouse", "trustpilot", "Trustpilot"))
+        self.assertEqual(core._parse_ats_entry("lever:my-co|My Co A/S"),
+                         ("lever", "my-co", "My Co A/S"))
+        self.assertEqual(core._parse_ats_entry("greenhouse:some-corp")[2], "Some Corp")
+
+    def test_location_filter(self):
+        old = core.ATS_LOCATION_KEEP
+        core.ATS_LOCATION_KEEP = ["denmark", "remote"]
+        try:
+            self.assertTrue(core._ats_location_ok("Copenhagen, Denmark"))
+            self.assertTrue(core._ats_location_ok("Remote; Poland"))
+            self.assertFalse(core._ats_location_ok("Berlin, Germany"))
+            core.ATS_LOCATION_KEEP = []
+            self.assertTrue(core._ats_location_ok("Anywhere"))   # empty keep-list = keep all
+        finally:
+            core.ATS_LOCATION_KEEP = old
+
+    def test_teaser_build_marks_full_body(self):
+        old = core.ATS_LOCATION_KEEP
+        core.ATS_LOCATION_KEEP = ["denmark"]
+        try:
+            body = "x" * 250
+            t = core._ats_teaser(title="Data Student", company="Acme",
+                                 location="Copenhagen, Denmark", url="https://x/1",
+                                 body=body, published="2026-07-01", cutoff_date=self.CUTOFF)
+            self.assertEqual(t["source_site"], "ats")
+            self.assertEqual(t["source"], "full")       # substantial body -> skip fetch stage
+            self.assertEqual(t["_description"], body)
+        finally:
+            core.ATS_LOCATION_KEEP = old
+
+    def test_teaser_drops_stale_offlocation_and_urlless(self):
+        old = core.ATS_LOCATION_KEEP
+        core.ATS_LOCATION_KEEP = ["denmark"]
+        try:
+            base = dict(title="T", company="A", url="https://x/1", body="b",
+                        cutoff_date=self.CUTOFF)
+            self.assertIsNone(core._ats_teaser(location="Copenhagen, Denmark",
+                              published="2026-05-01", **base))               # stale
+            self.assertIsNone(core._ats_teaser(location="Berlin, Germany",
+                              published="2026-07-01", **base))               # off-location
+            self.assertIsNone(core._ats_teaser(title="T", company="A", url="", body="b",
+                              location="Copenhagen, Denmark", published="2026-07-01",
+                              cutoff_date=self.CUTOFF))                       # no url
+        finally:
+            core.ATS_LOCATION_KEEP = old
+
+    def test_teaser_excludes_company(self):
+        old_loc, old_exc = core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES
+        core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES = ["denmark"], ["kommune"]
+        try:
+            self.assertIsNone(core._ats_teaser(title="T", company="Aarhus Kommune",
+                              location="Aarhus, Denmark", url="https://x/1", body="b",
+                              published="2026-07-01", cutoff_date=self.CUTOFF))
+        finally:
+            core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES = old_loc, old_exc
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,12 @@ queries = [
     "office assistant",
 ]
 
+# OPTIONAL — target-employer watchlist: poll these companies' public career APIs directly
+# (Greenhouse/Lever). Each entry is "greenhouse:<slug>" or "lever:<slug>" (optionally
+# "|Display Name"). Set to [] to switch the ATS source off for this person. Omit to reuse the
+# default list in config.py. Test a slug first: curl boards-api.greenhouse.io/v1/boards/<slug>/jobs
+# ats_companies = ["greenhouse:trustpilot|Trustpilot", "greenhouse:wolt|Wolt"]
+
 # OPTIONAL — danish_ok = true keeps Danish-required roles in this person's shortlist (they're
 # comfortable working in Danish). Default (omitted) hides roles the scorer grades as requiring
 # Danish. Either way the multilingual model still reads and scores Danish-language ads.
