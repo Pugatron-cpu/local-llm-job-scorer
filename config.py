@@ -199,13 +199,18 @@ TARGET_QUERIES = [
     "backend student",
     "IT operations student",
     "system administration student",
+    # --- Curated 2026-07 from match data: title patterns that were landing high-fit,
+    #     shortlist-eligible roles which no existing query targeted ---
+    "AI engineer student",       # your best matches are "AI Engineer" titles; none was covered
+    "student worker",            # common English title variant (Student Worker @ Podimo, etc.)
+    "studentermedarbejder AI",   # Danish spelling variant of studentermedhjælper (was scoring 95)
     # --- Track B: foot-in-the-door roles (LLM keeps only the ones at tech companies).
-    #     Noisier; comment out if a run gets too slow.
+    #     Noisier; comment out if a run gets too slow. Trimmed 2026-07: dropped
+    #     "workplace coordinator" + "logistics coordinator student" (generic ops/logistics,
+    #     rarely a tech employer — pure scoring cost). Re-add if you want wider Track B reach.
     "office assistant",
     "office coordinator",
     "kontorassistent",
-    "workplace coordinator",
-    "logistics coordinator student",
 ]
 
 # Company-level exclusions (substring match, lowercase).
@@ -304,6 +309,10 @@ THEHUB_QUERIES = [
     "backend",
     "platform engineer",
     "intern",
+    # --- curated 2026-07 from match data: your two strongest role themes as explicit queries
+    #     (the broad "AI"/"data" terms rank differently; these surface role-specific results) ---
+    "AI engineer",
+    "data scientist",
 ]
 
 # --- source: Jobnet (job.jobnet.dk) — SCAFFOLD, DISABLED (no public API as of 2026-07) -----
