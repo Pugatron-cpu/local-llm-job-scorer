@@ -12,8 +12,8 @@ USAGE
     python c_prepare.py 3                      # prep shortlist item #3
     python c_prepare.py https://...            # prep any job URL (in the archive or not)
     python c_prepare.py --status <url> applied # update a tracked role's status
-    python c_prepare.py --score-tracker        # backfill the model score for roles you added
-                                               # from a URL (so the tracker becomes an eval set)
+    python c_prepare.py --score-tracker        # one-off: backfill scores for OLD url-added rows
+                                               # (new url-adds are now scored automatically)
 
 The brief is a HANDOFF: a fresh Claude conversation in the Project (which has the candidate's
 master profile) does the final CV + motivation letter. The handoff wording (which profile file
@@ -182,6 +182,18 @@ def _fill_blanks(row: dict, vals: dict) -> bool:
     return changed
 
 
+def _score_role(title, company, location, url, description):
+    """Score one role from an ALREADY-FETCHED description (reused by inline prep-scoring and by
+    --score-tracker so both behave identically). Returns the score_job dict, or None on an empty
+    description or a scoring error."""
+    if not (description or "").strip():
+        return None
+    job = {"title": title or "", "company": company or "", "location": location or "N/A",
+           "url": url, "source": "full"}
+    res = core.score_job(job, description)
+    return None if res.get("reasoning") == "scoring error" else res
+
+
 def score_tracker_gaps():
     """Fill the model score for tracker rows added from a URL that was never scraped (e.g. a
     direct company/ATS apply link pasted into `c_prepare.py <url>`). This turns applications.csv
@@ -218,10 +230,9 @@ def score_tracker_gaps():
             failed += 1
             print(f"  [skip]    {who:<24} fetch failed ({(err or 'no body')[:28]}) — left blank")
             continue
-        job = {"title": r.get("role", ""), "company": r.get("company", ""),
-               "location": r.get("location", "N/A"), "url": url, "source": "full"}
-        res = core.score_job(job, desc)
-        if res.get("reasoning") == "scoring error":
+        res = _score_role(r.get("role", ""), r.get("company", ""),
+                          r.get("location", "N/A"), url, desc)
+        if not res:
             failed += 1
             print(f"  [skip]    {who:<24} scoring error — left blank")
             continue
@@ -447,6 +458,22 @@ def prepare(meta: dict):
         if not meta.get(k) or str(meta.get(k)).upper() == "N/A":
             meta[k] = tf.get(k, meta.get(k, ""))
 
+    # Score the role too, unless it came from the archive already carrying a score. Reuses the
+    # description fetched above (no extra fetch), so a URL-added role lands in the tracker as an
+    # eval-ready datapoint instead of a blank -- no later --score-tracker needed for it.
+    if str(meta.get("score", "")).strip() in ("", "0"):
+        res = _score_role(meta.get("title", ""), meta.get("company", ""),
+                          meta.get("location", "N/A"), meta.get("url", ""), description)
+        if res:
+            meta["score"] = str(res.get("score", ""))
+            meta["track"] = res.get("track", "") or meta.get("track", "")
+            if not meta.get("employment_type") or str(meta.get("employment_type")).upper() == "N/A":
+                meta["employment_type"] = res.get("employment_type", "") or meta.get("employment_type", "")
+            print(f"  scored {res.get('score')}  track {res.get('track')}  "
+                  f"({res.get('employment_type')})")
+        elif description.strip():
+            print("  ⚠ scoring failed — tracker score left blank (fill later with --score-tracker).")
+
     os.makedirs(config.APPLICATIONS_DIR, exist_ok=True)
     base = f"{datetime.now():%Y-%m-%d}_{_slug(meta.get('company',''))}"   # date first -> chronological sort
     brief_path = _unique_path(config.APPLICATIONS_DIR, base)
@@ -498,8 +525,8 @@ def prepare_by_url(url: str):
               f"({row.get('score','')}/100)")
         return prepare(dict(row))
     else:
-        print("URL not in the archive — preparing from a live fetch only "
-              "(no local score/track available).")
+        print("URL not in the archive — fetching live, and scoring it so the tracker row "
+              "still gets a score/track.")
         return prepare({"url": url})
 
 

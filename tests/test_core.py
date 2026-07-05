@@ -426,6 +426,20 @@ class TrackerScoreBackfill(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(row["score"], "")
 
+    def test_score_role_passthrough_and_guards(self):
+        import c_prepare, core
+        orig = core.score_job
+        try:
+            core.score_job = lambda job, desc, model=None: {
+                "score": 88, "track": "A", "employment_type": "student", "reasoning": "ok"}
+            res = c_prepare._score_role("T", "C", "Cph", "http://x", "a real description")
+            self.assertEqual(res["score"], 88)
+            self.assertIsNone(c_prepare._score_role("T", "C", "Cph", "http://x", ""))   # no desc
+            core.score_job = lambda job, desc, model=None: {"reasoning": "scoring error"}
+            self.assertIsNone(c_prepare._score_role("T", "C", "Cph", "http://x", "d"))  # error
+        finally:
+            core.score_job = orig
+
 
 if __name__ == "__main__":
     unittest.main()
