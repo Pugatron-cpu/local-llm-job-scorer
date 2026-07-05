@@ -2,16 +2,18 @@
 b_analyze.py — STEP B: review the dataset (read-only, run anytime).
 
 Reads the archive (job_market_data/job_market_data.csv) and prints a terminal overview:
-score/track/employment-type/location distributions, Danish-required rate, fetch reliability,
-recurring companies, the current open shortlist, and run-over-run drift from runs.csv.
+score/track/employment-type distributions, Danish level and ad-language rates, fetch
+reliability, which VIEW FILTERS are hiding what, recurring companies, the current open
+shortlist (identical to Weekly_Job_Matches.md — it comes from the same core.open_shortlist),
+and run-over-run drift from runs.csv.
 
     python b_analyze.py                 # uses the configured archive
     python b_analyze.py /path/to.csv    # explicit archive path
 
-Read-only and stdlib-only (no playwright/ollama needed). Settings come from config.py.
-
-Scope: the archive holds only SCORED roles, so it can't show the full scrape->drop funnel
-(those counts live in runs.csv). There's no per-query column either.
+Read-only. Uses core.py for the shortlist so this view can NEVER diverge from the report
+again (an earlier version reimplemented the filters by hand and silently drifted: it still
+read the removed danish_required column and never applied EXCLUDE_DANISH_REQUIRED).
+Settings come from config.py; personal data from profiles/<name>.toml.
 """
 
 import os
@@ -19,55 +21,8 @@ import sys
 import csv
 from collections import Counter, defaultdict
 
-from config import (SCORE_THRESHOLD, ACCEPTED_EMPLOYMENT_TYPES, REPORT_FRESH_DAYS,
-                    REQUIRE_COMMUTABLE, MASTER_ARCHIVE, RUNS_LOG)
-
-
-def _parse_date(s):
-    from datetime import datetime
-    s = (s or "").strip()
-    if len(s) < 10:
-        return None
-    try:
-        return datetime.strptime(s[:10], "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-
-def _is_open(row, today):
-    """Mirror of core.role_open_status: still worth showing as open?"""
-    dl = _parse_date(row.get("deadline"))
-    if dl is not None:
-        return dl >= today
-    seen = _parse_date(row.get("scraped_date"))
-    if seen is not None:
-        return (today - seen).days <= REPORT_FRESH_DAYS
-    return True
-
-
-def _commutable(row):
-    return (not REQUIRE_COMMUTABLE) or str(row.get("commute_ok", "true")).lower() != "false"
-
-
-DEFAULT_PATH = MASTER_ARCHIVE
-RUNS_PATH = RUNS_LOG
-
-
-def _load(path):
-    if not os.path.isfile(path):
-        sys.exit(f"No archive at {path}")
-    with open(path, encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    for r in rows:
-        try:
-            r["_score"] = int(r.get("score") or 0)
-        except ValueError:
-            r["_score"] = 0
-    return rows
-
-
-def _truthy(v):
-    return str(v).strip().lower() == "true"
+import config
+import core
 
 
 def _bar(count, maxcount, width=34):
@@ -90,39 +45,60 @@ def _dist(title, counter, order=None):
         print(f"  {str(k):<{klen}}  {c:>4}  {_bar(c, mx)}")
 
 
+def _load(path):
+    if not os.path.isfile(path):
+        sys.exit(f"No archive at {path}")
+    with open(path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for r in rows:
+        try:
+            r["_score"] = int(r.get("score") or 0)
+        except ValueError:
+            r["_score"] = 0
+    return rows
+
+
+def _truthy(v):
+    return str(v).strip().lower() == "true"
+
+
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PATH
+    path = sys.argv[1] if len(sys.argv) > 1 else config.MASTER_ARCHIVE
     rows = _load(path)
     n = len(rows)
     if n == 0:
         sys.exit("Archive is empty.")
 
-    urls = [r.get("url", "") for r in rows]
-    distinct = len(set(urls))
+    # De-dup stats on the CANONICAL url (same key the engine uses everywhere).
+    distinct = len({core.canonical_url(r.get("url", "")) for r in rows if r.get("url")})
     dates = sorted({r.get("scraped_date", "") for r in rows if r.get("scraped_date")})
-    from datetime import date
-    today = date.today()
-    scored_hi = [r for r in rows if r["_score"] >= SCORE_THRESHOLD]
-    in_types = [r for r in scored_hi
-                if r.get("employment_type", "unknown") in ACCEPTED_EMPLOYMENT_TYPES
-                and _commutable(r)]
-    matches = [r for r in in_types if _is_open(r, today)]          # open shortlist (= report)
-    closed = len(in_types) - len(matches)                          # aged out / past deadline
-    outside = [r for r in scored_hi if r not in in_types]          # high fit, wrong type for now
+
+    # The shortlist and the reasons rows were hidden — straight from the engine, so this
+    # printout is guaranteed identical to Weekly_Job_Matches.md and c_prepare numbering.
+    matches, dropped = core.shortlist_with_reasons(path)
 
     print("=" * 60)
-    print("JOB MARKET DATASET — ANALYSIS")
+    print(f"JOB MARKET DATASET — ANALYSIS   (profile: {config.ACTIVE_PROFILE})")
     print("=" * 60)
     print(f"Source         : {path}")
     print(f"Scored rows    : {n}")
-    print(f"Distinct URLs  : {distinct}" + ("" if distinct == n
-          else f"   (!! {n - distinct} duplicate URL rows)"))
+    print(f"Distinct roles : {distinct}  (canonical URLs"
+          + ("" if distinct == n else f"; {n - distinct} re-scored/duplicate rows") + ")")
     print(f"Runs (dates)   : {len(dates)}" + (f"   {dates[0]} .. {dates[-1]}" if dates else ""))
-    print(f"Open shortlist : {len(matches)}  (score >= {SCORE_THRESHOLD}, target types, "
-          f"still open)" + (f"   [{closed} more matched but closed/aged out]" if closed else ""))
-    if outside:
-        print(f"High-fit, other types : {len(outside)}  (score >= {SCORE_THRESHOLD} but "
-              f"outside current targets — available if you widen ACCEPTED_EMPLOYMENT_TYPES)")
+    print(f"Open shortlist : {len(matches)}")
+
+    # Active view filters — say exactly what is being hidden and by which knob.
+    print("\nACTIVE VIEW FILTERS (archive keeps everything; these only shape the shortlist)")
+    print(f"  score >= {config.SCORE_THRESHOLD}"
+          f"   ·   track B needs >= {config.TRACK_B_MIN_SCORE}")
+    print(f"  types: {', '.join(sorted(config.ACCEPTED_EMPLOYMENT_TYPES))}")
+    print(f"  commutable only          : {'ON' if config.REQUIRE_COMMUTABLE else 'off'}")
+    print(f"  hide Danish-REQUIRED     : {'ON' if config.EXCLUDE_DANISH_REQUIRED else 'off'}")
+    print(f"  hide Danish-WRITTEN ads  : {'ON' if config.EXCLUDE_DANISH_ADS else 'off'}")
+    if dropped:
+        print("  hidden from the deduped archive, by reason:")
+        for reason, k in dropped.most_common():
+            print(f"    {k:>4}  {reason}")
 
     # --- score buckets ---
     buckets = Counter()
@@ -130,13 +106,14 @@ def main():
         s = r["_score"]
         b = "85-100" if s >= 85 else "75-84" if s >= 75 else "50-74" if s >= 50 else "0-49"
         buckets[b] += 1
-    _dist("SCORE DISTRIBUTION", buckets, order=["85-100", "75-84", "50-74", "0-49"])
+    _dist("SCORE DISTRIBUTION (all scored rows)", buckets,
+          order=["85-100", "75-84", "50-74", "0-49"])
 
     # --- track ---
     track = Counter(r.get("track", "none") for r in rows)
     _dist("TRACK (all scored)", track, order=["A", "B", "none"])
     mt = Counter(r.get("track", "none") for r in matches)
-    print(f"  -> among matches: A={mt.get('A',0)}  B={mt.get('B',0)}")
+    print(f"  -> among matches: A={mt.get('A', 0)}  B={mt.get('B', 0)}")
 
     # --- employment type ---
     et = Counter(r.get("employment_type", "unknown") for r in rows)
@@ -144,7 +121,7 @@ def main():
           order=["student", "part_time", "internship", "full_time", "unknown"])
     ft = et.get("full_time", 0)
     if ft:
-        in_targets = "full_time" in ACCEPTED_EMPLOYMENT_TYPES
+        in_targets = "full_time" in config.ACCEPTED_EMPLOYMENT_TYPES
         print(f"  note: {ft} full_time roles scored on merit and kept in the DB; "
               + ("currently INCLUDED in your shortlist." if in_targets
                  else "currently filtered OUT of the shortlist (not in ACCEPTED_EMPLOYMENT_TYPES)."))
@@ -154,30 +131,33 @@ def main():
           Counter(r.get("work_mode", "unknown") for r in rows),
           order=["onsite", "hybrid", "remote", "unknown"])
 
-    # --- danish requirement (now graded: required / preferred / none) ---
-    def _dk_required(r):
-        return str(r.get("danish_level", "")).strip().lower() == "required"
-    def _dk_preferred(r):
-        return str(r.get("danish_level", "")).strip().lower() == "preferred"
-    dk_all = sum(1 for r in rows if _dk_required(r))
-    dk_match = sum(1 for r in matches if _dk_required(r))
-    pref_match = sum(1 for r in matches if _dk_preferred(r))
-    print("\nDANISH REQUIREMENT (graded by the scorer; English ads can still require Danish)")
-    print(f"  required, all scored : {dk_all}/{n} ({dk_all/n*100:.0f}%)")
-    if matches:
-        print(f"  required, in matches : {dk_match}/{len(matches)} "
-              f"({dk_match/len(matches)*100:.0f}%)   <- hide these with EXCLUDE_DANISH_REQUIRED")
-        print(f"  'a plus', in matches : {pref_match}/{len(matches)} "
-              f"({pref_match/len(matches)*100:.0f}%)   <- Danish preferred, not mandatory")
+    # --- Danish: the ROLE's requirement (LLM-graded enum) and the AD's writing language ---
+    def _lvl(r):
+        v = str(r.get("danish_level", "")).strip().lower()
+        return v if v in ("none", "preferred", "required") else "(blank — old scoring)"
+    _dist("DANISH LEVEL — how much Danish the ROLE requires (all scored)",
+          Counter(_lvl(r) for r in rows),
+          order=["none", "preferred", "required", "(blank — old scoring)"])
+    blanks_open = sum(1 for r in matches if _lvl(r).startswith("(blank"))
+    if blanks_open:
+        print(f"  ⚠ {blanks_open} shortlist row(s) predate the danish_level column — their "
+              f"Danish flags are unknown.\n    Fix: python a_scrape.py --rescore")
+
+    def _adlang(r):
+        v = str(r.get("ad_language", "")).strip().lower()
+        return v if v else "(blank — old scoring)"
+    _dist("AD LANGUAGE — what the ad is WRITTEN in (all scored)",
+          Counter(_adlang(r) for r in rows),
+          order=["en", "da", "sv", "no", "(blank — old scoring)"])
 
     # --- tech company rate among matches ---
     if matches:
         tech = sum(1 for r in matches if _truthy(r.get("is_tech_company")))
         print(f"\nTECH-COMPANY EMPLOYER (matches): {tech}/{len(matches)} "
-              f"({tech/len(matches)*100:.0f}%)")
+              f"({tech / len(matches) * 100:.0f}%)")
 
     # --- fetch reliability ---
-    _dist("SCORING SOURCE (fetch reliability)",
+    _dist("SCORING SOURCE (fetch reliability — 'snippet' rows have unreliable Danish flags)",
           Counter(r.get("source", "?") for r in rows), order=["full", "snippet"])
 
     # --- recurring companies ---
@@ -196,50 +176,58 @@ def main():
     for r in rows:
         d = r.get("scraped_date", "")
         by_date[d][0] += 1
-        if r["_score"] >= SCORE_THRESHOLD:
+        if r["_score"] >= config.SCORE_THRESHOLD:
             by_date[d][1] += 1
     if len(by_date) > 1:
-        print("\nDRIFT BY RUN (scored / matches)")
+        print("\nDRIFT BY RUN (scored / high-fit)")
+        mx = max(v[1] for v in by_date.values())
         for d in sorted(by_date):
             scored, m = by_date[d]
-            print(f"  {d}   scored {scored:>3}   matches {m:>2}  {_bar(m, max(v[1] for v in by_date.values()))}")
+            print(f"  {d}   scored {scored:>3}   high-fit {m:>2}  {_bar(m, mx)}")
 
-    # --- current shortlist ---
-    def _row_line(r):
+    # --- current shortlist (from the engine, so identical to the report) ---
+    def _row_line(i, r):
         flags = []
-        dlvl = str(r.get("danish_level", "")).strip().lower()
-        if dlvl == "required":
-            flags.append("DK req")
-        elif dlvl == "preferred":
-            flags.append("DK plus")
-        if _parse_date(r.get("deadline")):
+        lvl = str(r.get("danish_level", "")).strip().lower()
+        if lvl == "required":
+            flags.append("DK required")
+        elif lvl == "preferred":
+            flags.append("DK a plus")
+        elif lvl == "":
+            flags.append("flags unknown")
+        if str(r.get("ad_language", "")).lower() == "da":
+            flags.append("ad in DK")
+        if core._parse_date(r.get("deadline")):
             flags.append(f"due {r['deadline']}")
         if r.get("source") == "snippet":
             flags.append("teaser-only")
         tag = ("  [" + ", ".join(flags) + "]") if flags else ""
-        title = (r.get("title", "")[:54])
-        return (f"  {r['_score']:>3}  {r.get('track','?'):<4} {r.get('employment_type','?'):<10} "
-                f"{(r.get('company','')[:22]):<22} {title}{tag}")
+        title = (r.get("title", "")[:50])
+        return (f"  {i:>2}. {r['score']:>3}  {r.get('track', '?'):<4} "
+                f"{r.get('employment_type', '?'):<10} "
+                f"{(r.get('company', '')[:22]):<22} {title}{tag}")
 
-    print(f"\nCURRENT SHORTLIST (open: >= {SCORE_THRESHOLD}, target types, deadline not passed)")
-    for r in sorted(matches, key=lambda r: r["_score"], reverse=True):
-        print(_row_line(r))
-
-    if outside:
-        print(f"\nHIGH-FIT, OUTSIDE CURRENT TARGETS (>= {SCORE_THRESHOLD}, e.g. full-time)")
-        for r in sorted(outside, key=lambda r: r["_score"], reverse=True)[:15]:
-            print(_row_line(r))
+    print(f"\nCURRENT SHORTLIST — identical to Weekly_Job_Matches.md / c_prepare numbering")
+    if matches:
+        for i, r in enumerate(matches, 1):
+            print(_row_line(i, r))
+    else:
+        print("  (empty)")
 
     # --- run history (timing + funnel) from runs.csv, if present ---
-    if os.path.isfile(RUNS_PATH):
-        with open(RUNS_PATH, encoding="utf-8") as f:
+    if os.path.isfile(config.RUNS_LOG):
+        with open(config.RUNS_LOG, encoding="utf-8") as f:
             runs = list(csv.DictReader(f))
         if runs:
             print("\nRUN HISTORY (runs.csv — most recent last)")
+            print("  snippet_fallback = pages that failed to fetch; a spike means match "
+                  "quality + Danish flags degraded that run")
             for rr in runs[-10:]:
-                print(f"  {rr.get('run_ts',''):<19}  {rr.get('duration_s','?'):>6}s   "
-                      f"teasers {rr.get('teasers','?'):>3}  scored {rr.get('scored','?'):>3}  "
-                      f"matches {rr.get('matches','?'):>2}")
+                print(f"  {rr.get('run_ts', ''):<19}  {rr.get('duration_s', '?'):>6}s   "
+                      f"teasers {rr.get('teasers', '?'):>3}  scored {rr.get('scored', '?'):>3}  "
+                      f"fallback {rr.get('snippet_fallback', '?'):>2}  "
+                      f"errors {rr.get('errors', '?'):>2}  "
+                      f"matches {rr.get('matches', '?'):>2}")
 
     print()
 

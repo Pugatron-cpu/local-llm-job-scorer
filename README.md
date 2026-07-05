@@ -1,8 +1,9 @@
 # Job Search Pipeline
 
-A local, privacy-preserving job-search tool: scrapes Jobindex (and optionally The Hub),
-scores roles against a profile with a local LLM (Ollama / Qwen3.6-27B), de-duplicates across
-sources, and keeps an actionable, status-aware shortlist of currently-open matches.
+A local, privacy-preserving job-search tool: scrapes Jobindex and The Hub (plus an optional
+Jobnet scaffold), scores roles against a profile with a local LLM (Ollama; model set by
+`MODEL` in `config.py`), de-duplicates across sources, and keeps an actionable, status-aware
+shortlist of currently-open matches.
 
 Built end-to-end with Claude Code. It runs entirely on local hardware: the scoring model is
 served by a local Ollama instance, so job data and the candidate profile never leave the machine.
@@ -19,15 +20,22 @@ run them directly.
 | **`a_scrape.py`** | **STEP A** — search + score + rebuild the shortlist | first, and regularly |
 | **`b_analyze.py`** | **STEP B** — review the dataset (read-only) | anytime |
 | **`c_prepare.py`** | **STEP C** — prep a chosen role + log it to the tracker | when you pick a role |
+| **`e_status.py`** | **STEP E** — status board over the tracker (read-only) | anytime, to see what needs chasing |
 
 ```bash
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
+python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
+python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
 python b_analyze.py           # overview of the dataset + open shortlist
 python c_prepare.py           # list the shortlist, each row tagged with its tracker status
 python c_prepare.py --new     # list only roles not applied to yet
 python c_prepare.py 3         # prep shortlist item #3   (or: python c_prepare.py <url>)
 python c_prepare.py --status <url> applied   # update a tracked role's status
+python e_status.py            # funnel + overdue follow-ups + upcoming deadlines
 ```
+
+(There's no `d_` script in the run order: `d_model_ab.py` is an off-to-the-side tool for
+A/B-comparing two scoring models, not a pipeline step.)
 
 ## Profiles (running it for someone else)
 
@@ -62,9 +70,11 @@ Teasers come from a small source seam (`iter_sources` in `core.py`); each source
 same teaser shape and is isolated, so one failing source can't take down the run.
 
 - **Jobindex** (always on) — Playwright scrape over `TARGET_QUERIES`.
-- **The Hub** (`thehub.io`, off by default) — Nordic startup/scaleup board, English-first and
-  tech-heavy. Hits the JSON search API directly. To enable: confirm the endpoint with the curl
-  in `config.py`'s Hub section, then set `THEHUB_ENABLED = True`.
+- **The Hub** (`thehub.io`, on) — Nordic startup/scaleup board, English-first and tech-heavy.
+  Hits the JSON search API directly (`THEHUB_ENABLED = True`, endpoint verified 2026-06-25). To
+  turn it off, set `THEHUB_ENABLED = False`.
+- **Jobnet** (`jobnet.dk`, off) — scaffold for Denmark's public job board, shipped disabled
+  (`JOBNET_ENABLED = False`) until its endpoint/field names are confirmed; see `config.py`.
 
 The same role from two sources is collapsed by a **canonical URL** key plus a normalised
 company+title fallback, and that key links archive rows to the tracker.
@@ -96,7 +106,7 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `REQUIRE_COMMUTABLE` — `True` keeps only commutable / remote roles; `False` drops the filter.
 - `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
 - `SCORE_THRESHOLD`, `TARGET_QUERIES`, `MODEL`.
-- `THEHUB_*` — The Hub source (off until confirmed).
+- `THEHUB_*` — The Hub source (on; endpoint verified). `JOBNET_*` — Jobnet scaffold (off).
 
 The employment-type and commute filters are **views**: every role is scored on merit and
 stored regardless, so changing a filter re-surfaces matching roles without re-scoring.

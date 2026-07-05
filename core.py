@@ -1362,6 +1362,23 @@ def rescore_missing_flags(limit: int = 40):
     re-scores the still-relevant ones (score >= threshold, targeted type, still open) and
     appends fresh rows; latest-wins de-dup then makes the new scoring supersede the old rows
     everywhere. Capped at `limit` per invocation to bound runtime."""
+    return _rescore_open(force=False, limit=limit)
+
+
+def rescore_all(limit: int = 40):
+    """Escape hatch (`python a_scrape.py --rescore-all`): re-score EVERY still-open
+    shortlist-relevant row, not just the flag-blank ones. Use this after a model or prompt
+    change — without it, roles that already carry danish_level / ad_language are frozen at
+    their old scoring forever (rescore_missing_flags deliberately skips them). Same latest-wins
+    supersede and per-invocation `limit` as --rescore; still scoped to OPEN roles, so a
+    rejected/closed role stays frozen (that's intentional — you decided on it already)."""
+    return _rescore_open(force=True, limit=limit)
+
+
+def _rescore_open(force: bool, limit: int):
+    """Shared worker for the two re-score modes. `force=False` only touches rows with missing
+    Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
+    label = "--rescore-all" if force else "--rescore"
     today = datetime.now().strftime("%Y-%m-%d")
     today_d = datetime.now().date()
     stale = []
@@ -1372,17 +1389,20 @@ def rescore_missing_flags(limit: int = 40):
             continue
         if not role_open_status(r, today_d)[0]:
             continue
-        if r.get("danish_level", "") and r.get("ad_language", "") != "":
+        if not force and r.get("danish_level", "") and r.get("ad_language", "") != "":
             continue                       # flags already present -> nothing to fix
         stale.append(r)
     if not stale:
-        log.info("--rescore: no open shortlist-relevant rows with missing flags. Done.")
+        if force:
+            log.info(f"{label}: no open shortlist-relevant rows to re-score. Done.")
+        else:
+            log.info(f"{label}: no open shortlist-relevant rows with missing flags. Done.")
         return
     if len(stale) > limit:
-        log.info(f"--rescore: {len(stale)} rows need flags; doing the first {limit} "
+        log.info(f"{label}: {len(stale)} rows to re-score; doing the first {limit} "
                  f"(run again for the rest).")
         stale = stale[:limit]
-    log.info(f"--rescore: re-fetching + re-scoring {len(stale)} rows...")
+    log.info(f"{label}: re-fetching + re-scoring {len(stale)} rows...")
 
     jobs = []
     for r in stale:
@@ -1398,12 +1418,12 @@ def rescore_missing_flags(limit: int = 40):
             desc = job.pop("_fetched", "")
             job.pop("_fetch_err", "")
             if not desc:
-                log.warning(f"  --rescore: fetch failed, skipping {job['url']}")
+                log.warning(f"  {label}: fetch failed, skipping {job['url']}")
                 continue
             job["source"] = "full"
             res = score_job(job, desc)
             if res["reasoning"] == "scoring error":
-                log.warning(f"  --rescore: scoring failed, skipping {job['title']!r}")
+                log.warning(f"  {label}: scoring failed, skipping {job['title']!r}")
                 continue
             job.update(res)
             job["ad_language"] = _detect_lang(desc[:2000]) or ""
@@ -1413,7 +1433,7 @@ def rescore_missing_flags(limit: int = 40):
             archive.write(job)
             print(f"  re-scored [{job['score']:>3}] {job['title']} @ {job['company']} "
                   f"(danish={job['danish_level']}, ad={job['ad_language'] or '?'})")
-        log.info(f"--rescore: appended {archive.count} refreshed rows.")
+        log.info(f"{label}: appended {archive.count} refreshed rows.")
     write_report(MARKDOWN_REPORT, MASTER_ARCHIVE)
 
 # ---------------------------------------------------------------------------

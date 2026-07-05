@@ -250,5 +250,61 @@ class MigrateCsv(unittest.TestCase):
             os.remove(path)
 
 
+class StatusTracker(unittest.TestCase):
+    """The read-only tracker view (e_status.py): which roles are overdue, which have a live
+    deadline, and how the funnel counts. Pure selection logic, no file/tty."""
+    from datetime import date
+    TODAY = date(2026, 7, 5)
+
+    def _rows(self):
+        # status, next_followup, deadline
+        return [
+            {"company": "A", "role": "r", "status": "applied",    "next_followup": "2026-06-28", "deadline": ""},
+            {"company": "B", "role": "r", "status": "interested", "next_followup": "2026-07-10", "deadline": "2026-07-08"},
+            {"company": "C", "role": "r", "status": "interview",  "next_followup": "",           "deadline": ""},
+            {"company": "D", "role": "r", "status": "rejected",   "next_followup": "2026-06-01", "deadline": ""},
+            {"company": "E", "role": "r", "status": "skipped",    "next_followup": "2026-06-01", "deadline": "2026-07-20"},
+            {"company": "F", "role": "r", "status": "interested", "next_followup": "2026-06-20", "deadline": "2026-06-30"},
+            {"company": "G", "role": "r", "status": "offer",      "next_followup": "",           "deadline": "2026-07-09"},
+        ]
+
+    def test_overdue_only_active_and_past(self):
+        import e_status
+        got = [r["company"] for _, r in e_status.overdue_followups(self._rows(), self.TODAY)]
+        # A (applied, 06-28) and F (interested, 06-20) are past; D/E are terminal, B is future.
+        self.assertEqual(got, ["F", "A"])            # most overdue first
+
+    def test_followups_unset_active_only(self):
+        import e_status
+        got = [r["company"] for r in e_status.followups_unset(self._rows())]
+        self.assertEqual(got, ["C"])                 # active + blank; offer G is not "active"
+
+    def test_upcoming_deadlines_open_future_sorted(self):
+        import e_status
+        got = [r["company"] for _, r in e_status.upcoming_deadlines(self._rows(), self.TODAY)]
+        # B (07-08) future+interested; E terminal, F past, G already an offer -> excluded.
+        self.assertEqual(got, ["B"])
+
+    def test_missed_deadlines_interested_and_past(self):
+        import e_status
+        got = [r["company"] for _, r in e_status.missed_deadlines(self._rows(), self.TODAY)]
+        self.assertEqual(got, ["F"])                 # interested + deadline already gone
+
+    def test_funnel_counts(self):
+        import e_status
+        c = e_status.funnel_counts(self._rows())
+        self.assertEqual(c["interested"], 2)
+        self.assertEqual(c["applied"], 1)
+        self.assertEqual(c["offer"], 1)
+        self.assertEqual(c["skipped"], 1)
+
+    def test_date_parses_and_tolerates_junk(self):
+        import e_status
+        self.assertEqual(e_status._date("2026-07-05"), self.TODAY)
+        self.assertIsNone(e_status._date(""))
+        self.assertIsNone(e_status._date("N/A"))
+        self.assertIsNone(e_status._date("not-a-date"))
+
+
 if __name__ == "__main__":
     unittest.main()
