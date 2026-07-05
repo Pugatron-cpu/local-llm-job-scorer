@@ -339,7 +339,12 @@ JOBNET_QUERIES    = ["studentermedhjælper it", "studentermedhjælper data",
 #   Lever      -> jobs.lever.co/<slug>
 #                 curl 'https://api.lever.co/v0/postings/<slug>?mode=json'
 # Entry format: "provider:slug"  or  "provider:slug|Display Name".
-ATS_ENABLED   = True
+#
+# OFF by default (2026-07-05): measured on the seed list, only 2 of 55 roles these company
+# boards return are student/intern — the rest are full-time professional roles that get scored
+# then filtered out by employment_type, i.e. wasted LLM calls for a STUDENT search. Flip to
+# True the day you search full-time roles (post-graduation); the code + seeds are ready.
+ATS_ENABLED   = False
 ATS_COMPANIES = [
     # --- YOUR target-employer list. These three are companies that ALREADY produced high-fit
     #     matches in past scrapes AND run a public Greenhouse board (verified live 2026-07-05:
