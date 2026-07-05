@@ -389,5 +389,43 @@ class AtsWatchlist(unittest.TestCase):
             core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES = old_loc, old_exc
 
 
+class TrackerScoreBackfill(unittest.TestCase):
+    """c_prepare._fill_blanks: the safety core of --score-tracker. Must fill blanks only,
+    treat score '0' as blank, and never overwrite an existing value."""
+
+    def test_fills_only_blanks(self):
+        import c_prepare
+        row = {"score": "", "track": "", "employment_type": "", "status": "applied"}
+        changed = c_prepare._fill_blanks(row, {"score": "88", "track": "A",
+                                               "employment_type": "student"})
+        self.assertTrue(changed)
+        self.assertEqual(row["score"], "88")
+        self.assertEqual(row["track"], "A")
+        self.assertEqual(row["status"], "applied")          # untouched
+
+    def test_never_overwrites_existing(self):
+        import c_prepare
+        row = {"score": "95", "track": "A", "employment_type": "student"}
+        changed = c_prepare._fill_blanks(row, {"score": "10", "track": "B",
+                                               "employment_type": "full_time"})
+        self.assertFalse(changed)
+        self.assertEqual(row["score"], "95")                # kept
+        self.assertEqual(row["track"], "A")
+
+    def test_score_zero_counts_as_blank(self):
+        import c_prepare
+        row = {"score": "0", "track": "A"}
+        c_prepare._fill_blanks(row, {"score": "77", "track": "B"})
+        self.assertEqual(row["score"], "77")                # '0' -> filled
+        self.assertEqual(row["track"], "A")                 # 'A' not overwritten
+
+    def test_ignores_empty_new_values(self):
+        import c_prepare
+        row = {"score": "", "track": ""}
+        changed = c_prepare._fill_blanks(row, {"score": None, "track": ""})
+        self.assertFalse(changed)
+        self.assertEqual(row["score"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

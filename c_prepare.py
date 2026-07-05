@@ -12,6 +12,8 @@ USAGE
     python c_prepare.py 3                      # prep shortlist item #3
     python c_prepare.py https://...            # prep any job URL (in the archive or not)
     python c_prepare.py --status <url> applied # update a tracked role's status
+    python c_prepare.py --score-tracker        # backfill the model score for roles you added
+                                               # from a URL (so the tracker becomes an eval set)
 
 The brief is a HANDOFF: a fresh Claude conversation in the Project (which has the candidate's
 master profile) does the final CV + motivation letter. The handoff wording (which profile file
@@ -27,6 +29,7 @@ import os
 import re
 import csv
 import sys
+import shutil
 from datetime import datetime, timedelta
 
 import config
@@ -158,6 +161,83 @@ def _update_status(url: str, new_status: str) -> bool:
         for r in rows:
             w.writerow({k: r.get(k, "") for k in TRACKER_FIELDS})
     return True
+
+
+# --- backfill scores for manually-added roles (make the tracker an eval set) ---------------
+_SCOREABLE = ("score", "track", "employment_type")   # tracker columns we may fill
+
+
+def _fill_blanks(row: dict, vals: dict) -> bool:
+    """Set row[k]=v only where the row's current value is blank ('' or '0' for score) and v is
+    non-empty. Never overwrites an existing value or any column outside `vals`. Returns whether
+    anything changed."""
+    changed = False
+    for k, v in vals.items():
+        if v in (None, ""):
+            continue
+        cur = (row.get(k) or "").strip()
+        if cur == "" or (k == "score" and cur == "0"):
+            row[k] = v
+            changed = True
+    return changed
+
+
+def score_tracker_gaps():
+    """Fill the model score for tracker rows added from a URL that was never scraped (e.g. a
+    direct company/ATS apply link pasted into `c_prepare.py <url>`). This turns applications.csv
+    into a labelled eval set: your status decision next to the model's score.
+
+    Safe by design: backs up applications.csv first; only fills BLANK score/track/
+    employment_type; never touches status, notes, dates, or any populated field. Rows whose URL
+    can't be fetched (many ATS pages are JS-only) are reported and left blank."""
+    rows = _load_tracker()
+    todo = [r for r in rows
+            if (r.get("score") or "").strip() in ("", "0") and (r.get("url") or "").strip()]
+    if not todo:
+        print("Every tracker row already has a score. Nothing to backfill.")
+        return
+
+    bak = f"{config.TRACKER_CSV}.bak-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    shutil.copy2(config.TRACKER_CSV, bak)
+    print(f"{len(todo)} tracker row(s) missing a score. Backup -> {bak}")
+    print("Scoring (archive lookup, else live fetch + local LLM)...\n")
+
+    live = from_archive = failed = 0
+    for r in todo:
+        url = r["url"].strip()
+        who = (r.get("company", "") or "?")[:24]
+        arc = core.canonical_url(url) and _archive_row(url)
+        if arc and str(arc.get("score") or "").strip() not in ("", "0"):
+            _fill_blanks(r, {"score": str(arc.get("score")), "track": arc.get("track"),
+                             "employment_type": arc.get("employment_type")})
+            from_archive += 1
+            print(f"  [archive] {who:<24} score {arc.get('score')}")
+            continue
+        desc, err = core.fetch_one(url)
+        if not desc:
+            failed += 1
+            print(f"  [skip]    {who:<24} fetch failed ({(err or 'no body')[:28]}) — left blank")
+            continue
+        job = {"title": r.get("role", ""), "company": r.get("company", ""),
+               "location": r.get("location", "N/A"), "url": url, "source": "full"}
+        res = core.score_job(job, desc)
+        if res.get("reasoning") == "scoring error":
+            failed += 1
+            print(f"  [skip]    {who:<24} scoring error — left blank")
+            continue
+        _fill_blanks(r, {"score": str(res.get("score")), "track": res.get("track"),
+                         "employment_type": res.get("employment_type")})
+        live += 1
+        print(f"  [scored]  {who:<24} score {res.get('score')}  track {res.get('track')}  "
+              f"({res.get('employment_type')})")
+
+    with open(config.TRACKER_CSV, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=TRACKER_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in TRACKER_FIELDS})
+    print(f"\nDone: {live} scored live, {from_archive} from archive, {failed} left blank "
+          f"(usually JS-only ATS pages — paste those in manually if you want them scored).")
 
 
 # --- archive lookup (for roles already scored) --------------------------------------------
@@ -432,6 +512,10 @@ def main(argv):
         print_shortlist(only_new=True)
         return
 
+    if argv[0] == "--score-tracker":
+        score_tracker_gaps()
+        return
+
     if argv[0] == "--status":
         if len(argv) != 3:
             print("Usage: python c_prepare.py --status <url> <status>\n"
@@ -453,11 +537,12 @@ def main(argv):
         prepare_by_index(int(arg))
     else:
         print("Unrecognised argument. Use a shortlist number, a job URL, --new, or --status.\n"
-              "  python c_prepare.py            # list the full shortlist (with status)\n"
-              "  python c_prepare.py --new      # list only roles not yet applied to\n"
-              "  python c_prepare.py 3          # prep item #3\n"
-              "  python c_prepare.py <url>      # prep a URL\n"
-              "  python c_prepare.py --status <url> applied")
+              "  python c_prepare.py                 # list the full shortlist (with status)\n"
+              "  python c_prepare.py --new           # list only roles not yet applied to\n"
+              "  python c_prepare.py 3               # prep item #3\n"
+              "  python c_prepare.py <url>           # prep a URL\n"
+              "  python c_prepare.py --status <url> applied\n"
+              "  python c_prepare.py --score-tracker # backfill scores for manually-added roles")
 
 
 if __name__ == "__main__":

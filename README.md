@@ -32,6 +32,7 @@ python c_prepare.py           # list the shortlist, each row tagged with its tra
 python c_prepare.py --new     # list only roles not applied to yet
 python c_prepare.py 3         # prep shortlist item #3   (or: python c_prepare.py <url>)
 python c_prepare.py --status <url> applied   # update a tracked role's status
+python c_prepare.py --score-tracker  # backfill model scores for roles added by URL (eval set)
 python e_status.py            # funnel + overdue follow-ups + upcoming deadlines
 ```
 
