@@ -11,10 +11,10 @@ synthetic-archive test run (migration, filters, dedup, both CLI tools) before de
    than overwrite — this patch set was built from the Project's copy, which predates it.
    `core.py`, `b_analyze.py`, `c_prepare.py`, `a_scrape.py` are safe to drop in either way.
 2. Copy the files over the repo copy on the Z8.
-3. `profiles/borja.toml` is included (generated verbatim from the old hardcoded
+3. `profiles/<owner>.toml` is included (generated verbatim from the old hardcoded
    `CANDIDATE_PROFILE`/`LOCATION_ANCHOR`). Confirm `.gitignore` still covers
    `profiles/*.toml` except `_template.toml` before committing anything.
-4. `export JOBSEARCH_OWNER=borja` (in `~/.bashrc` if not already there).
+4. `export JOBSEARCH_OWNER=<owner>` (in `~/.bashrc` if not already there).
 5. First run migrates the archive (adds `ad_language`, drops nothing) and `runs.csv`
    automatically.
 6. Run `python a_scrape.py --rescore` once — it re-fetches and re-scores the still-open
@@ -91,7 +91,7 @@ synthetic-archive test run (migration, filters, dedup, both CLI tools) before de
   loads `candidate_profile`, `location_anchor`, `name`, and the Danish preferences from
   `profiles/<name>.toml` (gitignored). Owner = whoever `JOBSEARCH_OWNER` names; a clear
   error explains setup if neither the env var nor `--profile` is given.
-- `profiles/borja.toml` generated verbatim from the old hardcoded blocks (verified: Ø/ø
+- `profiles/<owner>.toml` generated verbatim from the old hardcoded blocks (verified: Ø/ø
   round-trip, profile length, toml parses). Sets `hide_danish_ads = true` and keeps
   `danish_ok = false`, matching the two options you wanted on.
 - `_template.toml` updated: owner setup steps, `name`, `hide_danish_ads`.

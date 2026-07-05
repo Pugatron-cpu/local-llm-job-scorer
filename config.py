@@ -278,7 +278,8 @@ THEHUB_QUERY_PARAMS    = {           # fixed params sent on every request
     "countryCode": "DK",            # Denmark; use "REMOTE" for remote-only, or drop for all
     "sorting": "mostPopular",
 }
-THEHUB_MAX_PAGES       = 5           # raised from 3 -> 5 for recall (speed is fine)
+THEHUB_MAX_PAGES       = 8           # raised 3 -> 5 -> 8 for recall (Hub is fast; push to 10
+                                     # if you want even deeper coverage per query)
 
 # Search terms for The Hub. It's English-first and tech-heavy, so the English/technical terms
 # carry the load; the LLM still keeps only genuinely relevant roles downstream.
@@ -305,16 +306,16 @@ THEHUB_QUERIES = [
     "intern",
 ]
 
-# --- source: Jobnet (job.jobnet.dk) — SCAFFOLD, disabled until verified -----------------
-# Denmark's public job board (every employer receiving public funds must post here), so it
-# covers a segment Jobindex and The Hub both miss. It is a SPA over a JSON search API, same
-# pattern as The Hub. Shipped DISABLED (like The Hub originally was) because the endpoint and
-# field names MUST be confirmed once from a real browser before feeding the archive:
-#   1. Open https://job.jobnet.dk/CV/FindWork in a browser
-#   2. Devtools (F12) -> Network -> Fetch/XHR, run a search
-#   3. Find the JSON request; put its URL in JOBNET_API_URL and match the params below
-#   4. Check one job object's field names against _jobnet_teaser() in core.py
-#   5. Set JOBNET_ENABLED = True
+# --- source: Jobnet (job.jobnet.dk) — SCAFFOLD, DISABLED (no public API as of 2026-07) -----
+# Denmark's public job board covers publicly-funded employers Jobindex/The Hub under-serve.
+# STATUS (probed 2026-07-05): NOT usable as an unauthenticated source. /CV/FindWork/Search now
+# 301-redirects to identityserver-prod.starplatform.dk/Account/Login — the JSON search sits
+# behind a StarPlatform (MitID) login. Individual /CV/FindWork/Details/{id} pages are still
+# public, but there is no public way to DISCOVER ids, so keyword search is gone. Do NOT enable
+# without a real logged-in-session token strategy (out of scope). Third-party mirrors (Apify /
+# Techmap) exist but are paid + external, which breaks the local/sovereign + privacy stance.
+# The scaffold below is left intact in case the public API returns; re-verify per the steps at
+# job.jobnet.dk before flipping this on.
 JOBNET_ENABLED    = False
 JOBNET_API_URL    = ""     # e.g. "https://job.jobnet.dk/CV/FindWork/Search" — CONFIRM FIRST
 JOBNET_QUERY_PARAM = "SearchString"

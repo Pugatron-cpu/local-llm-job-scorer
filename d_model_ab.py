@@ -5,7 +5,7 @@ Re-fetches the N most recently scored roles live and scores each with BOTH model
 identical input, then prints scores, tracks and Danish grades side by side plus timing.
 Read-only: nothing is written to the archive or the report. Use it whenever a new model
 looks tempting — benchmarks measure coding and trivia, not "does this Copenhagen student
-role fit Borja", so decide on your own data.
+role fit this candidate", so decide on your own data.
 
     python d_model_ab.py                                  # config.MODEL vs the previous model
     python d_model_ab.py gemma4:31b-it-q8_0 qwen3.6:27b-q8_0
