@@ -298,6 +298,23 @@ class StatusTracker(unittest.TestCase):
         self.assertEqual(c["offer"], 1)
         self.assertEqual(c["skipped"], 1)
 
+    def test_interview_outcome_statuses_are_terminal(self):
+        import e_status
+        # hired and rejected_after_interview are outcomes, not live -> no follow-up chasing,
+        # excluded from upcoming deadlines, and counted as "reached interview".
+        rows = [
+            {"company": "H", "role": "r", "status": "hired",
+             "next_followup": "2026-06-01", "deadline": "2026-07-20"},
+            {"company": "R", "role": "r", "status": "rejected_after_interview",
+             "next_followup": "2026-06-01", "deadline": "2026-07-20"},
+        ]
+        self.assertEqual(e_status.overdue_followups(rows, self.TODAY), [])   # not ACTIVE
+        self.assertEqual(e_status.upcoming_deadlines(rows, self.TODAY), [])  # not ACTIVE
+        self.assertIn("hired", e_status.FUNNEL)                     # success endpoint of the funnel
+        self.assertIn("rejected_after_interview", e_status.TERMINAL)
+        self.assertIn("hired", e_status.REACHED_INTERVIEW)
+        self.assertIn("rejected_after_interview", e_status.REACHED_INTERVIEW)
+
     def test_date_parses_and_tolerates_junk(self):
         import e_status
         self.assertEqual(e_status._date("2026-07-05"), self.TODAY)

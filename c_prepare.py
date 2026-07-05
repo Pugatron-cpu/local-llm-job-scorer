@@ -98,7 +98,8 @@ TRACKER_FIELDS = ["date_added", "status", "company", "role", "url", "employment_
                   "location", "deadline", "score", "track", "next_followup",
                   "brief_file", "notes"]
 
-STATUSES = ["interested", "applied", "interview", "offer", "rejected", "skipped"]
+STATUSES = ["interested", "applied", "interview", "offer", "hired", "rejected",
+            "rejected_after_interview", "skipped"]
 
 
 def _load_tracker():

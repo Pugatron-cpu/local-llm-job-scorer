@@ -4,7 +4,8 @@ e_status.py — STEP E: see where every application stands (read-only, run anyti
 Reads the tracker (applications/applications.csv, the file c_prepare appends to) and prints a
 terminal status board so nothing quietly slips:
   • FUNNEL       — how many roles sit at each stage right now (interested → applied →
-                   interview → offer, plus rejected / skipped), and a live-vs-closed summary;
+                   interview → offer → hired, plus rejected / rejected_after_interview /
+                   skipped), a live-vs-closed summary, and an interview→outcome breakdown;
   • FOLLOW-UPS   — active roles whose next_followup date has already passed (the thing that
                    actually gets forgotten), plus active roles with no follow-up date set;
   • DEADLINES    — open roles with an application deadline still ahead, soonest first, with
@@ -28,11 +29,13 @@ from datetime import datetime, date
 
 import config
 
-# The pipeline, in order, and the two terminal states. Mirrors c_prepare.STATUSES; kept
-# local so this read-only view has no reason to import the writer module.
-FUNNEL   = ["interested", "applied", "interview", "offer"]
-TERMINAL = ["rejected", "skipped"]
+# The pipeline, in order, then the terminal states. Mirrors c_prepare.STATUSES; kept local so
+# this read-only view has no reason to import the writer module.
+FUNNEL   = ["interested", "applied", "interview", "offer", "hired"]
+TERMINAL = ["rejected", "rejected_after_interview", "skipped"]
 ACTIVE   = {"interested", "applied", "interview"}   # still live -> follow-ups / deadlines matter
+# Statuses that mean an interview actually happened (for the interview-conversion summary).
+REACHED_INTERVIEW = ["interview", "offer", "hired", "rejected_after_interview"]
 
 URGENT_DAYS = 3   # a deadline this close (or closer) gets a ⚠
 
@@ -89,13 +92,12 @@ def followups_unset(rows):
 
 
 def upcoming_deadlines(rows, today):
-    """Open (non-terminal, not already an offer) roles with an application deadline still
-    ahead, soonest first."""
+    """Still-active roles (interested/applied/interview) with an application deadline still
+    ahead, soonest first. Once a role reaches offer/hired or is closed, its deadline is moot."""
     out = []
     for r in rows:
-        s = _status(r)
-        if s in TERMINAL or s == "offer":
-            continue
+        if _status(r) not in ACTIVE:      # only interested/applied/interview still chase a deadline;
+            continue                      # offer/hired/rejected/skipped make it moot
         d = _date(r.get("deadline"))
         if d and d >= today:
             out.append((d, r))
@@ -138,22 +140,28 @@ def print_header(rows):
 
 def print_funnel(rows):
     c = funnel_counts(rows)
-    order = FUNNEL + TERMINAL
-    known = {s for s in order}
+    known = set(FUNNEL) | set(TERMINAL)
+    w = max(len(s) for s in FUNNEL + TERMINAL)          # align to the longest status label
     mx = max((c.get(s, 0) for s in FUNNEL), default=0)  # scale bars to the live pipeline
     print("\nFUNNEL  (current stage of each role)")
     for s in FUNNEL:
-        print(f"  {s:<11} {c.get(s, 0):>4}  {_bar(c.get(s, 0), mx)}")
-    print("  " + "-" * 40)
+        print(f"  {s:<{w}}  {c.get(s, 0):>4}  {_bar(c.get(s, 0), mx)}")
+    print("  " + "-" * (w + 8))
     for s in TERMINAL:
-        print(f"  {s:<11} {c.get(s, 0):>4}")
-    other = sorted(k for k in c if k not in known)
-    for s in other:                                     # any non-standard status, kept visible
-        print(f"  {s:<11} {c.get(s, 0):>4}  (non-standard)")
-    live   = sum(c.get(s, 0) for s in ACTIVE)
-    closed = sum(c.get(s, 0) for s in TERMINAL)
+        print(f"  {s:<{w}}  {c.get(s, 0):>4}")
+    for s in sorted(k for k in c if k not in known):    # any non-standard status, kept visible
+        print(f"  {s:<{w}}  {c.get(s, 0):>4}  (non-standard)")
+
+    live       = sum(c.get(s, 0) for s in ACTIVE)
+    closed     = sum(c.get(s, 0) for s in TERMINAL)
+    reached_iv = sum(c.get(s, 0) for s in REACHED_INTERVIEW)
     print(f"\n  live (interested/applied/interview): {live}"
-          f"   ·   offers: {c.get('offer', 0)}   ·   closed: {closed}")
+          f"   ·   hired: {c.get('hired', 0)}   ·   closed: {closed}")
+    if reached_iv:                                      # interview -> outcome, once any happen
+        print(f"  reached interview: {reached_iv}  "
+              f"(hired {c.get('hired', 0)} · offer open {c.get('offer', 0)} · "
+              f"still interviewing {c.get('interview', 0)} · "
+              f"rejected after interview {c.get('rejected_after_interview', 0)})")
 
 
 def print_followups(rows, today):
