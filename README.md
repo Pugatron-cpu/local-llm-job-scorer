@@ -19,16 +19,21 @@ run them directly.
 | **`config.py`** | All settings (search terms, filters, model, thresholds, profiles) | edit, don't run |
 | **`core.py`** | The engine (scrape, fetch, score, archive, report) | imported, don't run |
 | **`a_scrape.py`** | **STEP A** — search + score + rebuild the shortlist | first, and regularly |
+| **`b_insights.py`** | **STEP B** — insights over your data (read-only) | anytime, to see funnel / market / skills |
 | **`c_prepare.py`** | **STEP C** — prep a chosen role + log it to the tracker | when you pick a role |
 
 ```bash
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
+python b_insights.py          # funnel + score-vs-behaviour + market + skill demand
+python b_insights.py --funnel # just the application funnel, response times & overdue chasing
+python b_insights.py --market # just the market view (score / Danish gate / employers)
+python b_insights.py --skills # just the ranked skill-demand table
 python c_prepare.py           # list the shortlist, each row tagged with its tracker status
 python c_prepare.py --new     # list only roles not applied to yet
 python c_prepare.py 3         # prep shortlist item #3   (or: python c_prepare.py <url>)
-python c_prepare.py --status <url> applied   # update a tracked role's status
+python c_prepare.py --status <url> applied   # update a tracked role's status (also logs the transition)
 python c_prepare.py --score-tracker  # backfill model scores for roles added by URL (eval set)
 ```
 
@@ -56,7 +61,7 @@ To add a profile:
    commute rule, and optionally search terms, a `danish_ok` flag, and a `require_commutable` flag).
 3. Run `python a_scrape.py --profile <name>` and share the resulting shortlist.
 
-The `--profile` flag works on `c_prepare.py` too. Note: the tool runs on the
+The `--profile` flag works on `b_insights.py` and `c_prepare.py` too. Note: the tool runs on the
 owner's hardware, so "running it for someone else" means you run it and hand back their shortlist.
 
 ## Sources
@@ -91,7 +96,8 @@ employer.
 - `job_market_data/job_market_data.csv` — the archive: every scored role.
 - `job_market_data/Weekly_Job_Matches.md` — the open shortlist (the actionable list).
 - `job_market_data/runs.csv` — one row per run: timing + funnel counts.
-- `applications/` — per-role Application Briefs + `applications.csv` (the tracker).
+- `applications/` — per-role Application Briefs + `applications.csv` (the tracker) +
+  `status_history.csv` (append-only log of every status change, for funnel timing).
 
 (For a profile run, the same files live under `job_market_data/_profiles/<name>/` and
 `applications/_profiles/<name>/`.)
