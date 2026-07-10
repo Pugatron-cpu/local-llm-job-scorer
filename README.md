@@ -19,25 +19,18 @@ run them directly.
 | **`config.py`** | All settings (search terms, filters, model, thresholds, profiles) | edit, don't run |
 | **`core.py`** | The engine (scrape, fetch, score, archive, report) | imported, don't run |
 | **`a_scrape.py`** | **STEP A** — search + score + rebuild the shortlist | first, and regularly |
-| **`b_analyze.py`** | **STEP B** — review the dataset (read-only) | anytime |
 | **`c_prepare.py`** | **STEP C** — prep a chosen role + log it to the tracker | when you pick a role |
-| **`e_status.py`** | **STEP E** — status board over the tracker (read-only) | anytime, to see what needs chasing |
 
 ```bash
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
-python b_analyze.py           # overview of the dataset + open shortlist
 python c_prepare.py           # list the shortlist, each row tagged with its tracker status
 python c_prepare.py --new     # list only roles not applied to yet
 python c_prepare.py 3         # prep shortlist item #3   (or: python c_prepare.py <url>)
 python c_prepare.py --status <url> applied   # update a tracked role's status
 python c_prepare.py --score-tracker  # backfill model scores for roles added by URL (eval set)
-python e_status.py            # funnel + overdue follow-ups + upcoming deadlines
 ```
-
-(There's no `d_` script in the run order: `d_model_ab.py` is an off-to-the-side tool for
-A/B-comparing two scoring models, not a pipeline step.)
 
 ## Profiles (running it for someone else)
 
@@ -63,7 +56,7 @@ To add a profile:
    commute rule, and optionally search terms, a `danish_ok` flag, and a `require_commutable` flag).
 3. Run `python a_scrape.py --profile <name>` and share the resulting shortlist.
 
-The `--profile` flag works on `b_analyze.py` and `c_prepare.py` too. Note: the tool runs on the
+The `--profile` flag works on `c_prepare.py` too. Note: the tool runs on the
 owner's hardware, so "running it for someone else" means you run it and hand back their shortlist.
 
 ## Sources
@@ -157,5 +150,4 @@ cp profiles/_template.toml profiles/yourname.toml
 `JOBSEARCH_OWNER` is unset it defaults to `owner`, and the tool will ask you to create
 `profiles/owner.toml`.
 
-Plus a running Ollama serving the model named in `config.py` (`MODEL`). `b_analyze.py` needs
-only the standard library.
+Plus a running Ollama serving the model named in `config.py` (`MODEL`).

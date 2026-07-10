@@ -1,7 +1,7 @@
 """
 config.py — all tunable settings for the job-search pipeline, in one place.
 
-Imported by core.py (the engine), a_scrape.py, b_analyze.py, and c_prepare.py, so a value
+Imported by core.py (the engine), a_scrape.py, and c_prepare.py, so a value
 changed here applies everywhere.
 
 PROFILES: the tool runs for ONE owner by default (you), persisting to the normal data dirs
@@ -27,8 +27,8 @@ PROFILES_DIR  = os.path.join(SCRIPT_DIR, "profiles")
 
 def _read_profile_flag() -> str:
     """Peek at `--profile <name>` (or the JOBSEARCH_PROFILE env var) and REMOVE the flag + its
-    value from sys.argv, so each tool's own argument parsing (c_prepare's <number>/<url>/--status,
-    b_analyze's optional path) never sees it. Resolved here, not via argparse, because every tool
+    value from sys.argv, so each tool's own argument parsing (c_prepare's <number>/<url>/--status)
+    never sees it. Resolved here, not via argparse, because every tool
     does `from config import *`, so the active profile must be known before any path or query is
     read. Returns the lowercased name, or "" if none was given."""
     name = os.environ.get("JOBSEARCH_PROFILE", "").strip()
@@ -79,7 +79,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 # trained on 140+ languages with balanced European representation and strong instruction
 # following; the 31B dense is the workstation flagship and q8_0 (34GB) fits the 48GB pool
 # with room for parallel KV slots at NUM_CTX below.
-# Alternatives, kept for A/B (run `python d_model_ab.py` to compare on YOUR archive):
+# Alternatives, kept for reference (set MODEL to one of these to try it):
 #   "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
 #                        coding-focused, and the match-quality regression coincided with it.
 #   "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,

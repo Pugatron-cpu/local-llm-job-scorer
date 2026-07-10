@@ -940,8 +940,8 @@ SCORE_SCHEMA = {
 }
 
 def score_job(job: dict, description: str, model: str | None = None) -> dict:
-    """Score one job. `model` overrides config.MODEL (used by d_model_ab.py to compare
-    candidate models on identical inputs); default behaviour is unchanged."""
+    """Score one job. `model` overrides config.MODEL for comparing candidate models on
+    identical inputs; default (None) uses config.MODEL and behaviour is unchanged."""
     prompt = f"""You are screening jobs for a candidate. Score the fit 0-100.
 There are TWO acceptable kinds of role.
 
@@ -1346,8 +1346,8 @@ def _dedup_archive(archive_path: str) -> list:
     Two passes: (1) collapse by canonical URL (tracking params stripped); then (2) collapse
     what survives by role_key fingerprint, so the SAME ad that entered the archive under two
     different sources' URLs (e.g. a company ATS link via Jobindex and the clean The Hub link)
-    shows ONCE in every view built on this — the shortlist, b_analyze, c_prepare numbering and
-    d_model_ab. The archive file itself is never rewritten; this is comparison-time only."""
+    shows ONCE in every view built on this — the shortlist and c_prepare numbering. The archive
+    file itself is never rewritten; this is comparison-time only."""
     if not os.path.isfile(archive_path):
         return []
     best = {}
@@ -1378,7 +1378,7 @@ def _dedup_archive(archive_path: str) -> list:
 def shortlist_reject_reason(r: dict, today=None):
     """The single source of truth for the shortlist VIEW filters: returns the reason string a
     (deduped) archive row is NOT on the open shortlist, or None if it qualifies. Shared by
-    shortlist_with_reasons (report / b_analyze / c_prepare) AND main()'s live console, so the
+    shortlist_with_reasons (report / c_prepare) AND main()'s live console, so the
     count printed during a run matches Weekly_Job_Matches.md instead of over-counting on just
     score+type. On a qualifying row it sets r['_days_left'] for downstream sorting/display."""
     today = today or datetime.now().date()
@@ -1407,7 +1407,7 @@ def shortlist_reject_reason(r: dict, today=None):
 
 def shortlist_with_reasons(archive_path: str):
     """(kept, dropped) — the open shortlist plus a Counter of why each deduped archive row
-    was excluded. The reasons are what b_analyze reports, so 'why isn't X showing?' is
+    was excluded, so 'why isn't X showing?' is
     answerable without re-reading the filter code. Filtering is delegated to
     shortlist_reject_reason so this view and main()'s live console never drift."""
     from collections import Counter
@@ -1431,7 +1431,7 @@ def shortlist_with_reasons(archive_path: str):
 def open_shortlist(archive_path: str) -> list:
     """The actionable shortlist: deduped archive rows passing the score / type / commute /
     Danish / track-B / still-open filters, sorted by urgency then score. Each row gets
-    r["_days_left"]. Shared by write_report, b_analyze and c_prepare so numbering is identical."""
+    r["_days_left"]. Shared by write_report and c_prepare so numbering is identical."""
     return shortlist_with_reasons(archive_path)[0]
 
 
