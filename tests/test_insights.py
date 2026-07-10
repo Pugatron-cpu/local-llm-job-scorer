@@ -73,6 +73,37 @@ class FunnelAggregations(unittest.TestCase):
         self.assertCountEqual(got, ["u1", "u9"])
 
 
+class UnscoredHandling(unittest.TestCase):
+    TRK = [
+        {"status": "applied", "score": "80"},
+        {"status": "applied", "score": "0"},      # URL-added, never scored -> unscored
+        {"status": "applied", "score": ""},        # blank -> unscored
+        {"status": "skipped", "score": "90"},
+        {"status": "interested", "score": "0"},    # unscored
+    ]
+
+    def test_score_by_status_excludes_zero_and_blank(self):
+        sbs = b_insights.score_by_status(self.TRK)
+        self.assertEqual(sbs["applied"], (1, 80.0))     # only the 80 row counts
+        self.assertNotIn("interested", sbs)             # its only row was unscored
+
+    def test_unscored_by_status_counts(self):
+        u = b_insights.unscored_by_status(self.TRK)
+        self.assertEqual(u["applied"], 2)               # the 0 and the blank
+        self.assertEqual(u["interested"], 1)
+        self.assertNotIn("skipped", u)
+
+    def test_pooled_mean_ignores_unscored(self):
+        # applied-plus pooled = only the 80 row (0 and blank excluded)
+        self.assertEqual(b_insights.pooled_score_mean(self.TRK, b_insights.APPLIED_PLUS), 80.0)
+        self.assertIsNone(b_insights.pooled_score_mean(self.TRK, {"offer"}))
+
+    def test_band_split_excludes_unscored(self):
+        band = b_insights.skip_vs_apply_by_band(self.TRK)
+        self.assertEqual(band.get(80), (1, 0))          # the 80 applied row
+        self.assertNotIn(0, band)                        # the score-0 rows are not banded
+
+
 class MarketAggregations(unittest.TestCase):
     ARC = [
         {"score": "90", "danish_level": "required", "matched_skills": "Python; SQL", "source": "full"},

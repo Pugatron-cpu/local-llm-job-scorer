@@ -69,6 +69,15 @@ def _scores(rows, col="score"):
     return [s for s in (_num(r.get(col)) for r in rows) if s is not None]
 
 
+def _score_val(v):
+    """A USABLE model score, or None. In the tracker a blank OR a 0 means the role was added by
+    URL and never scored (not a genuine zero fit) — so both are treated as unscored and kept out
+    of the score-by-status means, which a run of URL-added zeros would otherwise drag down. (The
+    market view keeps 0s via `_num`, because in the ARCHIVE a 0 is a real 'excluded' score.)"""
+    s = _num(v)
+    return s if (s is not None and s > 0) else None
+
+
 def _skills(row):
     return [s.strip().lower() for s in _SKILL_SPLIT.split(row.get("matched_skills") or "")
             if s.strip()]
@@ -97,22 +106,37 @@ def funnel(trk):
 
 
 def score_by_status(trk):
-    """status -> (n, mean score). The headline diagnostic: if SKIPPED roles outscore APPLIED
-    ones, the model's `score` isn't capturing what actually drives your choice."""
+    """status -> (n, mean score) over SCORED rows only (unscored 0/blank excluded, see
+    _score_val). The headline diagnostic: if SKIPPED roles outscore APPLIED ones, the model's
+    `score` isn't capturing what actually drives your choice."""
     buckets = collections.defaultdict(list)
     for r in trk:
-        s = _num(r.get("score"))
+        s = _score_val(r.get("score"))
         if s is not None:
             buckets[_status(r)].append(s)
     return {k: (len(v), statistics.mean(v)) for k, v in buckets.items()}
 
 
+def unscored_by_status(trk):
+    """status -> count of rows with no usable score (0/blank). These are excluded from the means
+    above; surfacing them keeps a run of URL-added, never-scored rows honest."""
+    return collections.Counter(_status(r) for r in trk if _score_val(r.get("score")) is None)
+
+
+def pooled_score_mean(trk, group):
+    """Mean score across all SCORED rows whose status is in `group` (pooled, not a mean-of-means).
+    None if the group has no scored rows."""
+    vals = [s for s in (_score_val(r.get("score")) for r in trk if _status(r) in group)
+            if s is not None]
+    return statistics.mean(vals) if vals else None
+
+
 def skip_vs_apply_by_band(trk, width=10):
-    """score band -> (applied_plus, triaged_away). Shows whether high-scoring roles are being
-    skipped (a sign the score and your real filters diverge)."""
+    """score band -> (applied_plus, triaged_away) over SCORED rows only. Shows whether high-scoring
+    roles are being skipped (a sign the score and your real filters diverge)."""
     out = collections.defaultdict(lambda: [0, 0])
     for r in trk:
-        s = _num(r.get("score"))
+        s = _score_val(r.get("score"))
         if s is None:
             continue
         band = int(s // width) * width
@@ -282,13 +306,20 @@ def print_funnel(trk):
 
     sbs = score_by_status(trk)
     if sbs:
-        print("\n  mean model-score by status  (does the score match what you actually do?):")
+        print("\n  mean model-score by status  (scored rows only — does the score match your choices?):")
         for st, (n, m) in sorted(sbs.items(), key=lambda kv: -kv[1][1]):
             print(f"    {st:<26} n={n:<3} mean {m:5.1f}")
-        applied_m = statistics.mean([m for st, (n, m) in sbs.items() if st in APPLIED_PLUS]) \
-            if any(st in APPLIED_PLUS for st in sbs) else None
-        skip_m = sbs.get("skipped", (0, None))[1]
-        if applied_m is not None and skip_m is not None and skip_m > applied_m + 3:
+        unscored = unscored_by_status(trk)
+        if unscored:
+            total = sum(unscored.values())
+            detail = ", ".join(f"{st} {c}" for st, c in unscored.most_common())
+            print(f"    (excluded {total} unscored row(s) — 0/blank, add scores with "
+                  f"`c_prepare.py --score-tracker`: {detail})")
+        # Pooled means (weighted, not mean-of-means) so a genuine divergence isn't faked by
+        # per-status averaging. Only flag a gap wide enough to matter on a 0-100 scale.
+        applied_m = pooled_score_mean(trk, APPLIED_PLUS)
+        skip_m = pooled_score_mean(trk, {"skipped"})
+        if applied_m is not None and skip_m is not None and skip_m - applied_m >= 5:
             print(f"    → skipped roles average {skip_m:.0f} vs applied {applied_m:.0f}: the score rates "
                   "roles you reject HIGHER than\n      ones you pursue, so it isn't capturing your real "
                   "filter (language / commute / seniority).")
