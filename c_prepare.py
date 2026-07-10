@@ -112,14 +112,6 @@ def _load_tracker():
         return list(csv.DictReader(f))
 
 
-def _tracker_has(url: str) -> bool:
-    # Match on the CANONICAL url (tracking params stripped, host/slash normalised) so a role
-    # already in the tracker under one source's URL (e.g. Jobindex's thehub.io/...?utm_source=
-    # jobindex) is recognised when the same role arrives later under another source's clean URL.
-    cu = core.canonical_url(url)
-    return any(core.canonical_url(r.get("url", "")) == cu for r in _load_tracker())
-
-
 def _tracker_status_map() -> dict:
     """canonical_url -> status, for annotating the shortlist with where each role already
     stands (applied / rejected / skipped / interview / offer / interested). Canonical keys so
@@ -130,6 +122,51 @@ def _tracker_status_map() -> dict:
         if cu:
             out[cu] = (r.get("status") or "").strip().lower() or "tracked"
     return out
+
+
+def _tracker_rolekey_map() -> dict:
+    """role_key -> status, the cross-source companion to _tracker_status_map. Lets a RE-POST of
+    an already-tracked role (same company + same title-token-set, but a DIFFERENT url) be
+    recognised on the shortlist even though its url never matched the tracker. First status wins
+    so the oldest/most-advanced entry annotates the row."""
+    out = {}
+    for r in _load_tracker():
+        rk = core.role_key({"company": r.get("company", ""), "title": r.get("role", "")})
+        if rk:
+            out.setdefault(rk, (r.get("status") or "").strip().lower() or "tracked")
+    return out
+
+
+def _tracker_matches(url: str, company: str, title: str):
+    """Find tracker rows that are THIS role. Returns (url_hits, key_hits):
+      - url_hits: same canonical url -> definitely the same posting (already handled today).
+      - key_hits: same cross-source role_key (company + title-token-set) under a DIFFERENT url
+        -> almost certainly a re-post of a role already logged. Excludes anything in url_hits.
+    role_key is conservative (exact token set), so a key_hit means 'same role', not 'similar'."""
+    cu = core.canonical_url(url)
+    rk = core.role_key({"company": company, "title": title})
+    url_hits, key_hits = [], []
+    for r in _load_tracker():
+        if cu and core.canonical_url(r.get("url", "")) == cu:
+            url_hits.append(r)
+        elif rk and core.role_key(
+                {"company": r.get("company", ""), "title": r.get("role", "")}) == rk:
+            key_hits.append(r)
+    return url_hits, key_hits
+
+
+def _tracker_company_rows(company: str, exclude_urls=()):
+    """Other tracked applications at the same (normalised) employer — the soft 'am I over-applying
+    to one company?' heads-up. Company names are normalised the same way as the cross-source key
+    ('Monta ApS' == 'Monta'), and rows whose canonical url is in exclude_urls (the current role
+    itself, or its matches) are left out so the note only shows OTHER roles."""
+    nc = core._norm_company(company)
+    if not nc:
+        return []
+    ex = {core.canonical_url(u) for u in exclude_urls if u}
+    return [r for r in _load_tracker()
+            if core._norm_company(r.get("company", "")) == nc
+            and core.canonical_url(r.get("url", "")) not in ex]
 
 
 def _append_tracker(row: dict):
@@ -383,18 +420,48 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
 
 
 # --- main flows ---------------------------------------------------------------------------
+def _confirm(prompt: str) -> bool:
+    """Yes/No prompt, default No. On non-interactive (piped) stdin it defaults to No and says so,
+    so an automated run never silently appends a possible-duplicate row."""
+    if not sys.stdin.isatty():
+        print(f"{prompt} [y/N]  (non-interactive: assuming N)")
+        return False
+    try:
+        return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _company_note(company: str, exclude_urls=()):
+    """Print a soft heads-up listing OTHER tracked applications at the same employer. Purely
+    informational (never blocks) — surfaces 'you already have N open apps here' at prep time."""
+    others = _tracker_company_rows(company, exclude_urls)
+    if not others:
+        return
+    print(f"\n  Note: {len(others)} other tracked application(s) at {company or 'this employer'}:")
+    for r in others:
+        print(f"      {(r.get('role','') or '')[:50]:<50} "
+              f"(status: {r.get('status','?')}, added {r.get('date_added','?')})")
+
+
 def print_shortlist(only_new: bool = False):
     rows = core.open_shortlist(config.MASTER_ARCHIVE)
     if not rows:
         print("Shortlist is empty. Run `python a_scrape.py` first.")
         return
     status_map = _tracker_status_map()
+    key_map = _tracker_rolekey_map()
 
     # Classify every row once. The index is kept stable (same as the full shortlist and the
     # Weekly_Job_Matches.md report), so `c_prepare.py <n>` means the same role in every view.
+    # A row is matched by url first, then by cross-source role_key, so a RE-POST of an
+    # already-tracked role (new url, same company+title) is no longer flagged as NEW.
     items = []
     for i, r in enumerate(rows, 1):
         st = status_map.get(core.canonical_url(r.get("url", "")))
+        if st is None:
+            st = key_map.get(core.role_key(
+                {"company": r.get("company", ""), "title": r.get("title", "")}))
         kind = "new" if st is None else ("interested" if st == "interested" else st)
         items.append((i, r, kind))
     actionable = [it for it in items if it[2] in ("new", "interested")]
@@ -481,16 +548,34 @@ def prepare(meta: dict):
         f.write(_build_brief(meta, tf, description, err))
     print(f"  brief -> {brief_path}")
 
-    # Tracker (skip duplicate URLs, but the brief is always (re)written).
-    if _tracker_has(url):
+    # Tracker (the brief is always (re)written above; here we decide the tracker row). Three
+    # cases: exact url already tracked -> leave as-is; same role under a DIFFERENT url (re-post)
+    # -> warn and ask before adding a second row; otherwise -> append as normal.
+    company_t = meta.get("company", "")
+    title_t = meta.get("title", "")
+    url_hits, key_hits = _tracker_matches(url, company_t, title_t)
+
+    do_append = True
+    if url_hits:
         print("  already in tracker — brief refreshed, tracker row left as-is.")
-    else:
+        do_append = False
+    elif key_hits:
+        print("\n  ⚠ Possible duplicate — this role is already tracked under a different URL:")
+        for r in key_hits:
+            print(f"      {r.get('company','')} — {r.get('role','')}  "
+                  f"(status: {r.get('status','?')}, added {r.get('date_added','?')})")
+            print(f"        {r.get('url','')}")
+        do_append = _confirm("  Add a new tracker row for this posting anyway?")
+        if not do_append:
+            print("  no new row added (brief still written).")
+
+    if do_append:
         followup = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
         _append_tracker({
             "date_added": datetime.now().strftime("%Y-%m-%d"),
             "status": "interested",
-            "company": meta.get("company", ""),
-            "role": meta.get("title", ""),
+            "company": company_t,
+            "role": title_t,
             "url": url,
             "employment_type": meta.get("employment_type", ""),
             "location": meta.get("location", ""),
@@ -502,6 +587,9 @@ def prepare(meta: dict):
             "notes": "",
         })
         print(f"  tracked -> {config.TRACKER_CSV}  (status=interested, follow-up {followup})")
+
+    # Soft over-applying heads-up: other roles already tracked at this same employer.
+    _company_note(company_t, exclude_urls=[url] + [r.get("url", "") for r in url_hits + key_hits])
 
     print("\nNext: paste the brief into the job-search Project to draft the CV + letter.")
     return brief_path
