@@ -137,6 +137,14 @@ def _tracker_rolekey_map() -> dict:
     return out
 
 
+def _tracker_url_match(url: str):
+    """The tracker row (if any) already holding this exact role by canonical url — the cheap
+    check used to short-circuit a re-prep BEFORE any fetch/scoring/brief work."""
+    cu = core.canonical_url(url)
+    return next((r for r in _load_tracker()
+                 if core.canonical_url(r.get("url", "")) == cu), None)
+
+
 def _tracker_matches(url: str, company: str, title: str):
     """Find tracker rows that are THIS role. Returns (url_hits, key_hits):
       - url_hits: same canonical url -> definitely the same posting (already handled today).
@@ -541,6 +549,19 @@ def print_shortlist(only_new: bool = False):
 def prepare(meta: dict):
     """meta must have at least 'url' (and ideally title/company/track from the archive)."""
     url = meta["url"]
+
+    # Exact-URL duplicate: this role is already tracked. Skip everything — no re-fetch, no LLM
+    # call, no brief. A brief is written ONLY for a role that gets a tracker row, so the dated
+    # applications/*.md list stays a clean "what to apply next" queue with no duplicate clutter.
+    dup = _tracker_url_match(url)
+    if dup:
+        bf = (dup.get("brief_file") or "").strip()
+        print(f"Already in tracker: {dup.get('company','')} — {dup.get('role','')} "
+              f"(status: {dup.get('status','?')}, added {dup.get('date_added','?')}).")
+        print("  Skipped — no re-fetch, no new brief." + (f"  Existing brief: {bf}" if bf else ""))
+        print("  (to change its status use:  python c_prepare.py --status <url> <new-status>)")
+        return None
+
     print(f"Re-fetching live: {url}")
     description, err = core.fetch_one(url)
     if err:
@@ -579,55 +600,54 @@ def prepare(meta: dict):
         elif description.strip():
             print("  ⚠ scoring failed — tracker score left blank (fill later with --score-tracker).")
 
-    os.makedirs(config.APPLICATIONS_DIR, exist_ok=True)
-    base = f"{datetime.now():%Y-%m-%d}_{_slug(meta.get('company',''))}"   # date first -> chronological sort
-    brief_path = _unique_path(config.APPLICATIONS_DIR, base)
-    with open(brief_path, "w", encoding="utf-8") as f:
-        f.write(_build_brief(meta, tf, description, err))
-    print(f"  brief -> {brief_path}")
-
-    # Tracker (the brief is always (re)written above; here we decide the tracker row). Three
-    # cases: exact url already tracked -> leave as-is; same role under a DIFFERENT url (re-post)
-    # -> warn and ask before adding a second row; otherwise -> append as normal.
+    # Decide the tracker row BEFORE writing anything, so a duplicate never spawns a brief file.
+    # (Exact-URL dups already returned above.) A role re-posted under a DIFFERENT url is a
+    # role_key match: warn and ask. A brief is written ONLY when a row is actually added — so
+    # every applications/*.md corresponds to a tracked role, keeping that list a clean queue.
     company_t = meta.get("company", "")
     title_t = meta.get("title", "")
-    url_hits, key_hits = _tracker_matches(url, company_t, title_t)
+    _, key_hits = _tracker_matches(url, company_t, title_t)
 
     do_append = True
-    if url_hits:
-        print("  already in tracker — brief refreshed, tracker row left as-is.")
-        do_append = False
-    elif key_hits:
+    if key_hits:
         print("\n  ⚠ Possible duplicate — this role is already tracked under a different URL:")
         for r in key_hits:
             print(f"      {r.get('company','')} — {r.get('role','')}  "
                   f"(status: {r.get('status','?')}, added {r.get('date_added','?')})")
             print(f"        {r.get('url','')}")
-        do_append = _confirm("  Add a new tracker row for this posting anyway?")
+        do_append = _confirm("  Add a new tracker row (and brief) for this posting anyway?")
         if not do_append:
-            print("  no new row added (brief still written).")
+            print("  skipped — no tracker row, no brief written.")
+            _company_note(company_t, exclude_urls=[url] + [r.get("url", "") for r in key_hits])
+            return None
 
-    if do_append:
-        followup = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-        _append_tracker({
-            "date_added": datetime.now().strftime("%Y-%m-%d"),
-            "status": "interested",
-            "company": company_t,
-            "role": title_t,
-            "url": url,
-            "employment_type": meta.get("employment_type", ""),
-            "location": meta.get("location", ""),
-            "deadline": meta.get("deadline", ""),
-            "score": meta.get("score", ""),
-            "track": meta.get("track", ""),
-            "next_followup": followup,
-            "brief_file": os.path.basename(brief_path),
-            "notes": "",
-        })
-        print(f"  tracked -> {config.TRACKER_CSV}  (status=interested, follow-up {followup})")
+    os.makedirs(config.APPLICATIONS_DIR, exist_ok=True)
+    base = f"{datetime.now():%Y-%m-%d}_{_slug(company_t)}"   # date first -> chronological sort
+    brief_path = _unique_path(config.APPLICATIONS_DIR, base)
+    with open(brief_path, "w", encoding="utf-8") as f:
+        f.write(_build_brief(meta, tf, description, err))
+    print(f"  brief -> {brief_path}")
+
+    followup = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    _append_tracker({
+        "date_added": datetime.now().strftime("%Y-%m-%d"),
+        "status": "interested",
+        "company": company_t,
+        "role": title_t,
+        "url": url,
+        "employment_type": meta.get("employment_type", ""),
+        "location": meta.get("location", ""),
+        "deadline": meta.get("deadline", ""),
+        "score": meta.get("score", ""),
+        "track": meta.get("track", ""),
+        "next_followup": followup,
+        "brief_file": os.path.basename(brief_path),
+        "notes": "",
+    })
+    print(f"  tracked -> {config.TRACKER_CSV}  (status=interested, follow-up {followup})")
 
     # Soft over-applying heads-up: other roles already tracked at this same employer.
-    _company_note(company_t, exclude_urls=[url] + [r.get("url", "") for r in url_hits + key_hits])
+    _company_note(company_t, exclude_urls=[url] + [r.get("url", "") for r in key_hits])
 
     print("\nNext: paste the brief into the job-search Project to draft the CV + letter.")
     return brief_path

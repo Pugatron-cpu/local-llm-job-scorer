@@ -86,9 +86,11 @@ same teaser shape and is isolated, so one failing source can't take down the run
 The same role from two sources is collapsed by a **canonical URL** key plus a normalised
 company+title fallback (`role_key`), and that key links archive rows to the tracker. The
 tracker reuses the same key both ways: on the shortlist an already-applied role is tagged
-(not shown as *new*), and at prep time a **re-post under a different URL** is flagged before a
-second row is logged (you confirm before it's added), so you don't apply to the same role
-twice. Prepping also prints a heads-up listing any other roles you already track at that
+(not shown as *new*), and at prep time prepping an **exact-URL duplicate is skipped entirely**
+(no re-fetch, no new brief), while a **re-post under a different URL** is flagged before a
+second row is logged (you confirm before it's added). A brief `.md` is written only when a
+tracker row is added, so the dated `applications/*.md` files stay a clean "what to apply next"
+queue. Prepping also prints a heads-up listing any other roles you already track at that
 employer.
 
 ## What it produces

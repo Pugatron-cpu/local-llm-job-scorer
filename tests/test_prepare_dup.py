@@ -95,6 +95,39 @@ class TrackerDupTests(unittest.TestCase):
         rk = c_prepare.core.role_key({"company": "Monta", "title": "Student DevOps Engineer"})
         self.assertEqual(m.get(rk), "applied")
 
+    def test_url_match_canonicalises(self):
+        self.assertIsNotNone(c_prepare._tracker_url_match(
+            "https://thehub.io/jobs/abc123?utm_source=whatever"))   # tracking params ignored
+        self.assertIsNone(c_prepare._tracker_url_match("https://thehub.io/jobs/zzz999"))
+
+
+class DupBriefSkip(unittest.TestCase):
+    """Exact-URL duplicate: prepare() must skip entirely — no brief file, no tracker row — so the
+    applications/*.md queue never accumulates duplicate clutter. Runs offline: the dup check is
+    before any fetch, so prepare() returns before touching the network."""
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._oapp, self._otrk = config.APPLICATIONS_DIR, config.TRACKER_CSV
+        config.APPLICATIONS_DIR = self._dir
+        config.TRACKER_CSV = os.path.join(self._dir, "applications.csv")
+        _write_tracker(config.TRACKER_CSV, [
+            {"date_added": "2026-07-01", "status": "applied", "company": "C", "role": "r",
+             "url": "https://x.io/jobs/1", "brief_file": "2026-07-01_C.md"},
+        ])
+
+    def tearDown(self):
+        config.APPLICATIONS_DIR, config.TRACKER_CSV = self._oapp, self._otrk
+        import shutil
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_exact_url_dup_writes_nothing(self):
+        before = set(os.listdir(self._dir))
+        result = c_prepare.prepare({"url": "https://x.io/jobs/1?utm_source=linkedin"})
+        self.assertIsNone(result)                       # early-exit
+        self.assertEqual(set(os.listdir(self._dir)), before)   # no new .md, tracker unchanged
+        with open(config.TRACKER_CSV, encoding="utf-8") as f:
+            self.assertEqual(len(list(csv.DictReader(f))), 1)  # still one row
+
 
 if __name__ == "__main__":
     unittest.main()
