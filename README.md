@@ -79,7 +79,12 @@ same teaser shape and is isolated, so one failing source can't take down the run
   keyword search to use; see the note in `config.py`.
 
 The same role from two sources is collapsed by a **canonical URL** key plus a normalised
-company+title fallback, and that key links archive rows to the tracker.
+company+title fallback (`role_key`), and that key links archive rows to the tracker. The
+tracker reuses the same key both ways: on the shortlist an already-applied role is tagged
+(not shown as *new*), and at prep time a **re-post under a different URL** is flagged before a
+second row is logged (you confirm before it's added), so you don't apply to the same role
+twice. Prepping also prints a heads-up listing any other roles you already track at that
+employer.
 
 ## What it produces
 
