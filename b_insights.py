@@ -123,6 +123,40 @@ def skip_vs_apply_by_band(trk, width=10):
     return {b: tuple(v) for b, v in sorted(out.items())}
 
 
+def _history_path():
+    return os.path.join(config.APPLICATIONS_DIR, "status_history.csv")
+
+
+def load_history():
+    return _load(_history_path())
+
+
+RESPONSE_STATES = {"interview", "offer", "hired", "rejected", "rejected_after_interview"}
+
+
+def response_times(history):
+    """From the append-only transition log: per role, days from the `applied` transition to the
+    first response (interview/rejected/...). Empty until enough `--status` changes accrue.
+    Returns (list_of_days, transitions_by_type Counter)."""
+    events = collections.defaultdict(list)   # canonical url -> [(date, new_status)]
+    by_type = collections.Counter()
+    for h in history:
+        d = core._parse_date(h.get("date"))
+        by_type[f"{h.get('old_status','?')}→{h.get('new_status','?')}"] += 1
+        if d:
+            events[core.canonical_url(h.get("url", ""))].append((d, (h.get("new_status") or "").lower()))
+    days = []
+    for evs in events.values():
+        evs.sort()
+        applied = next((d for d, s in evs if s == "applied"), None)
+        if not applied:
+            continue
+        resp = next((d for d, s in evs if s in RESPONSE_STATES and d >= applied), None)
+        if resp:
+            days.append((resp - applied).days)
+    return days, by_type
+
+
 def overdue_followups(trk, today):
     """Active rows whose next_followup date is in the past — who to chase, most overdue first."""
     out = []
@@ -230,6 +264,23 @@ def print_funnel(trk):
             print(f"    {b:>3}-{b+9:<3}  applied {ap:>3}   triaged {sk:>3}   {_bar(ap, ap+sk)}")
 
 
+def print_response_times(history):
+    print("\n══ RESPONSE TIMES ══  (status_history.csv, append-only)")
+    if not history:
+        print("  No transition history yet — it accrues from now on each time you run")
+        print("  `python c_prepare.py --status <url> <new-status>`. Come back once a few land.")
+        return
+    days, by_type = response_times(history)
+    print(f"  {len(history)} transitions logged.  transitions by type:")
+    for t, n in by_type.most_common():
+        print(f"    {t:<34} {n:>3}")
+    if days:
+        print(f"\n  applied → first response: median {statistics.median(days):.0f}d "
+              f"(min {min(days)}, max {max(days)}, n={len(days)})")
+    else:
+        print("\n  applied → response: not enough completed applied→response pairs yet.")
+
+
 def print_overdue(trk):
     from datetime import datetime
     od = overdue_followups(trk, datetime.now().date())
@@ -308,6 +359,7 @@ def main(argv):
     print(f"Job-search insights  ·  tracker {len(trk)} rows  ·  archive {len(arc)} rows")
     if all_sections or "--funnel" in want:
         print_funnel(trk)
+        print_response_times(load_history())
         print_overdue(trk)
     if all_sections or "--market" in want:
         print_market(arc)

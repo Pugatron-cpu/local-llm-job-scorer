@@ -179,15 +179,52 @@ def _append_tracker(row: dict):
         w.writerow({k: row.get(k, "") for k in TRACKER_FIELDS})
 
 
+# --- status-transition log (append-only; NEVER rewrites, so it's the safe place to capture
+#     funnel timing the tracker can't — one row per status change). Lives beside the tracker,
+#     profile-aware, and is what b_insights reads for time-to-response.
+STATUS_HISTORY_FIELDS = ["date", "url", "company", "role", "old_status", "new_status"]
+
+
+def _status_history_path() -> str:
+    return os.path.join(config.APPLICATIONS_DIR, "status_history.csv")
+
+
+def _append_status_history(transitions: list):
+    """Append one row per real status change to status_history.csv. Append-only: it grows, it is
+    never rewritten, so the tracker's no-rewrite constraint is untouched and the timeline is
+    tamper-evident. No-op on an empty list."""
+    if not transitions:
+        return
+    path = _status_history_path()
+    os.makedirs(config.APPLICATIONS_DIR, exist_ok=True)
+    new = not os.path.isfile(path)
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=STATUS_HISTORY_FIELDS)
+        if new:
+            w.writeheader()
+        for t in transitions:
+            w.writerow({k: t.get(k, "") for k in STATUS_HISTORY_FIELDS})
+
+
 def _update_status(url: str, new_status: str) -> bool:
     """Rewrite the tracker with one row's status updated. Returns True if a row matched.
     Matching is on the canonical url, so `--status <clean-or-utm-url> applied` updates the
-    existing row even if the stored url carries different tracking params."""
+    existing row even if the stored url carries different tracking params. Every real change
+    (old != new) is also appended to status_history.csv so the funnel timeline is captured."""
     cu = core.canonical_url(url)
+    ns = (new_status or "").strip().lower()
     rows = _load_tracker()
     hit = False
+    transitions = []
     for r in rows:
         if core.canonical_url(r.get("url", "")) == cu:
+            old = (r.get("status") or "").strip().lower()
+            if old != ns:
+                transitions.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "url": r.get("url", ""), "company": r.get("company", ""),
+                    "role": r.get("role", ""), "old_status": old, "new_status": ns,
+                })
             r["status"] = new_status
             hit = True
     if not hit:
@@ -197,6 +234,7 @@ def _update_status(url: str, new_status: str) -> bool:
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, "") for k in TRACKER_FIELDS})
+    _append_status_history(transitions)   # only after the tracker write succeeds
     return True
 
 
