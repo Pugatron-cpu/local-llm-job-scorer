@@ -119,6 +119,33 @@ class ResponseTimes(unittest.TestCase):
         self.assertEqual(b_insights.response_times([]), ([], __import__("collections").Counter()))
 
 
+def _has_sklearn():
+    try:
+        import sklearn  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class ReasonClustering(unittest.TestCase):
+    def test_too_few_rows_returns_empty(self):
+        self.assertEqual(b_insights.cluster_reasons([{"reasoning": "x"}]), [])
+
+    @unittest.skipUnless(_has_sklearn(), "scikit-learn not installed")
+    def test_separates_two_obvious_themes_deterministically(self):
+        arc = ([{"reasoning": "strong python data engineering technical fit for the candidate",
+                 "score": "80", "title": f"Data Eng {i}"} for i in range(10)] +
+               [{"reasoning": "sales and marketing role explicitly excluded non technical",
+                 "score": "0", "title": f"Sales {i}"} for i in range(10)])
+        a = b_insights.cluster_reasons(arc, k=2)
+        b = b_insights.cluster_reasons(arc, k=2)
+        self.assertEqual([c["size"] for c in a], [c["size"] for c in b])   # deterministic
+        self.assertEqual(sum(c["size"] for c in a), 20)                    # every row assigned
+        allterms = " ".join(t for c in a for t in c["terms"])
+        self.assertIn("python", allterms)
+        self.assertIn("sales", allterms)
+
+
 class StatusHistoryLogging(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.mkdtemp()

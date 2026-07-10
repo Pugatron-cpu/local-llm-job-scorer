@@ -16,6 +16,7 @@ USAGE
     python b_insights.py --funnel      # just the application funnel + score-vs-behaviour gap
     python b_insights.py --market       # just the market view (score / language / sources)
     python b_insights.py --skills       # just the skill-demand ranking
+    python b_insights.py --themes       # cluster the LLM reasoning into why-themes (needs scikit-learn)
     python b_insights.py --profile jan  # run against a sandboxed profile's data
 
 Small-sample honesty: with a few dozen applications the funnel RATES are directional, not
@@ -203,6 +204,41 @@ def top_companies(rows, threshold, limit=12):
     return c.most_common(limit)
 
 
+def cluster_reasons(arc, k=8, seed=42):
+    """Cluster the LLM `reasoning` texts into why-themes with TF-IDF + KMeans. Returns cluster
+    dicts (size, mean_score, terms, examples) largest-first. Deterministic (fixed seed). Raises
+    ImportError if scikit-learn is absent so the caller can degrade gracefully."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.cluster import KMeans
+
+    rows = [r for r in arc if len((r.get("reasoning") or "").strip()) >= 20]
+    if len(rows) < 4:
+        return []
+    k = min(k, len(rows) // 2)
+    if k < 2:
+        return []
+    vec = TfidfVectorizer(stop_words="english", max_df=0.5, min_df=5, ngram_range=(1, 2))
+    X = vec.fit_transform([r["reasoning"] for r in rows])
+    km = KMeans(n_clusters=k, random_state=seed, n_init=10).fit(X)
+    terms = vec.get_feature_names_out()
+    dist = km.transform(X)   # per-point distance to every centre; used to pick representatives
+    out = []
+    for c in range(k):
+        idx = [i for i, lbl in enumerate(km.labels_) if lbl == c]
+        if not idx:
+            continue
+        top = [terms[t] for t in km.cluster_centers_[c].argsort()[::-1][:6]]
+        scores = [s for s in (_num(rows[i].get("score")) for i in idx) if s is not None]
+        near = sorted(idx, key=lambda i: dist[i, c])[:3]          # closest to the centroid
+        out.append({
+            "size": len(idx),
+            "mean_score": statistics.mean(scores) if scores else None,
+            "terms": top,
+            "examples": [(rows[i].get("title") or "")[:48] for i in near],
+        })
+    return sorted(out, key=lambda c: -c["size"])
+
+
 def skill_frequency(rows, min_score=None, limit=25):
     c = collections.Counter()
     for r in rows:
@@ -349,12 +385,35 @@ def print_skills(arc):
             print(f"    {n:>4}  {skill}")
 
 
+def print_themes(arc, k=8):
+    print("\n══ WHY-THEMES ══  (TF-IDF + KMeans over the LLM `reasoning`)")
+    if not arc:
+        print("  Archive is empty — run a_scrape.py first.")
+        return
+    try:
+        clusters = cluster_reasons(arc, k=k)
+    except ImportError:
+        print("  scikit-learn not installed — run:  pip install -r requirements.txt")
+        return
+    if not clusters:
+        print("  Not enough reasoning text to cluster.")
+        return
+    print("  Each theme = a recurring reason roles score how they do (terms are the cluster's own).")
+    for i, c in enumerate(clusters, 1):
+        ms = f"{c['mean_score']:.0f}" if c["mean_score"] is not None else "n/a"
+        print(f"\n  #{i}  {c['size']:>4} roles · mean score {ms}")
+        print(f"      terms:  {', '.join(c['terms'])}")
+        for ex in c["examples"]:
+            if ex:
+                print(f"      e.g.    {ex}")
+
+
 # --------------------------------------------------------------------------- main
 def main(argv):
     trk = _load(config.TRACKER_CSV)
     arc = _load(config.MASTER_ARCHIVE)
     want = set(a for a in argv if a.startswith("--"))
-    all_sections = not (want & {"--funnel", "--market", "--skills"})
+    all_sections = not (want & {"--funnel", "--market", "--skills", "--themes"})
 
     print(f"Job-search insights  ·  tracker {len(trk)} rows  ·  archive {len(arc)} rows")
     if all_sections or "--funnel" in want:
@@ -365,6 +424,8 @@ def main(argv):
         print_market(arc)
     if all_sections or "--skills" in want:
         print_skills(arc)
+    if all_sections or "--themes" in want:
+        print_themes(arc)
     print()
 
 

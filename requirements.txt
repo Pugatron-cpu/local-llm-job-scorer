@@ -7,3 +7,4 @@ beautifulsoup4
 playwright
 lingua-language-detector        # Danish-language detection (core.looks_danish_only)
 tomli; python_version < "3.11"  # profiles need TOML; built in on 3.11+, this is the fallback
+scikit-learn                    # b_insights.py --themes only (reasoning clustering); rest of pipeline runs without it
