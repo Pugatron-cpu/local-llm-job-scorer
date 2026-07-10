@@ -87,8 +87,8 @@ class UnscoredHandling(unittest.TestCase):
         self.assertEqual(sbs["applied"], (1, 80.0))     # only the 80 row counts
         self.assertNotIn("interested", sbs)             # its only row was unscored
 
-    def test_unscored_by_status_counts(self):
-        u = b_insights.unscored_by_status(self.TRK)
+    def test_no_fit_score_by_status_counts(self):
+        u = b_insights.no_fit_score_by_status(self.TRK)
         self.assertEqual(u["applied"], 2)               # the 0 and the blank
         self.assertEqual(u["interested"], 1)
         self.assertNotIn("skipped", u)

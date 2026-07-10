@@ -70,10 +70,11 @@ def _scores(rows, col="score"):
 
 
 def _score_val(v):
-    """A USABLE model score, or None. In the tracker a blank OR a 0 means the role was added by
-    URL and never scored (not a genuine zero fit) — so both are treated as unscored and kept out
-    of the score-by-status means, which a run of URL-added zeros would otherwise drag down. (The
-    market view keeps 0s via `_num`, because in the ARCHIVE a 0 is a real 'excluded' score.)"""
+    """A USABLE FIT score for the tracker's alignment means, or None. Both a blank (never scored)
+    and a 0/none (either never scored, or a genuine 'excluded' non-fit) are dropped: neither is a
+    meaningful point on the 1-100 fit spectrum, and a run of URL-added zeros would otherwise drag
+    the applied mean down. (The market view keeps 0s via `_num`, because in the ARCHIVE a 0 is a
+    real 'excluded' score worth counting.)"""
     s = _num(v)
     return s if (s is not None and s > 0) else None
 
@@ -117,9 +118,9 @@ def score_by_status(trk):
     return {k: (len(v), statistics.mean(v)) for k, v in buckets.items()}
 
 
-def unscored_by_status(trk):
-    """status -> count of rows with no usable score (0/blank). These are excluded from the means
-    above; surfacing them keeps a run of URL-added, never-scored rows honest."""
+def no_fit_score_by_status(trk):
+    """status -> count of rows with no usable FIT score (0/blank). Excluded from the means above;
+    surfacing them keeps a run of URL-added / unfetchable rows honest."""
     return collections.Counter(_status(r) for r in trk if _score_val(r.get("score")) is None)
 
 
@@ -309,12 +310,12 @@ def print_funnel(trk):
         print("\n  mean model-score by status  (scored rows only — does the score match your choices?):")
         for st, (n, m) in sorted(sbs.items(), key=lambda kv: -kv[1][1]):
             print(f"    {st:<26} n={n:<3} mean {m:5.1f}")
-        unscored = unscored_by_status(trk)
-        if unscored:
-            total = sum(unscored.values())
-            detail = ", ".join(f"{st} {c}" for st, c in unscored.most_common())
-            print(f"    (excluded {total} unscored row(s) — 0/blank, add scores with "
-                  f"`c_prepare.py --score-tracker`: {detail})")
+        nofit = no_fit_score_by_status(trk)
+        if nofit:
+            total = sum(nofit.values())
+            detail = ", ".join(f"{st} {c}" for st, c in nofit.most_common())
+            print(f"    (excluded {total} row(s) with no usable fit score — 0/blank: {detail};")
+            print("     backfill blanks with `c_prepare.py --score-tracker`)")
         # Pooled means (weighted, not mean-of-means) so a genuine divergence isn't faked by
         # per-status averaging. Only flag a gap wide enough to matter on a 0-100 scale.
         applied_m = pooled_score_mean(trk, APPLIED_PLUS)
