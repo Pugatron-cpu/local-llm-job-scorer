@@ -1585,6 +1585,34 @@ def _rescore_open(force: bool, limit: int):
 # MAIN
 # ---------------------------------------------------------------------------
 
+RAW_TEASER_FIELDS = ["scrape_ts", "source_site", "title", "company", "location",
+                     "published_date", "url", "canonical_url", "snippet", "passed_prefilter"]
+
+
+def _log_raw_teasers(rows: list, path: str):
+    """Append every teaser this run SAW to raw_teasers.csv — before dedup, before the keyword
+    gate, before scoring. Pure side effect: nothing reads this file, so a failure here must never
+    take the scrape down with it (hence the blanket except).
+
+    Why it exists: the archive only keeps what passed INCLUDE_TERMS and then scored, so it can't
+    answer "what did my filter reject?" or "how long did this ad stay up?". Those questions can
+    only be answered by data captured at scrape time. Miss it and it's gone."""
+    if not rows:
+        return
+    try:
+        new = not os.path.isfile(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=RAW_TEASER_FIELDS)
+            if new:
+                w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in RAW_TEASER_FIELDS})
+        log.info(f"Raw log: +{len(rows)} teaser sighting(s) -> {os.path.basename(path)}")
+    except Exception as e:
+        log.warning(f"Raw teaser log failed ({e}) — the scrape carries on; only the raw log lost.")
+
+
 def main():
     run_start = datetime.now()
     t0 = time.monotonic()
@@ -1605,6 +1633,22 @@ def main():
     fresh, survivors = [], []
     dup_url = dup_role = 0                        # de-dup counters, for the log
     by_site = {}                                 # teaser counts per source, for the log
+    raw_seen = []                                # EVERY sighting this run, for the raw log
+
+    # Hoisted above Stage 1 so the raw log can record the pre-filter VERDICT for each teaser as
+    # it's seen (including the ones about to be dropped). Same function Stage 2 uses below — one
+    # definition, so the logged verdict can never drift from the real one.
+    def _keep_candidate(j):
+        if j.get("source_site") == "thehub":
+            title = f" {j['title']} ".lower()
+            if any(term in title for term in EXCLUDE_TERMS):
+                return False
+            body = j.get("_description", "")
+            if body:  # full body available -> require a real INCLUDE hit like any other ad
+                text = f" {j['title']} {body[:2500]} ".lower()
+                return any(term in text for term in INCLUDE_TERMS)
+            return True  # no body to judge -> keep, the LLM decides
+        return passes_prefilter(j)
 
     # Stage 1 — scrape from every enabled source (each isolated in iter_sources).
     #   De-dup on two keys, each spanning THIS run AND the whole archive:
@@ -1612,8 +1656,17 @@ def main():
     #     (b) role_key fingerprint — the SAME ad under a DIFFERENT source's URL (normalised
     #         company + sorted title tokens), which the URL key alone can't catch. This is
     #         what collapses "same job, two boards, two links" across sources and across runs.
+    scrape_ts = run_start.strftime("%Y-%m-%d %H:%M:%S")
     for job in iter_sources(cutoff):
         cu = canonical_url(job.get("url", ""))
+
+        # Raw log FIRST: every sighting, including the ones the next four lines are about to
+        # drop as duplicates. A still-live ad re-seen on 9 consecutive runs writes 9 rows — that
+        # repetition IS the signal (days-on-market). Dedup happens at analysis time, not here.
+        if LOG_RAW_TEASERS:
+            raw_seen.append({**job, "scrape_ts": scrape_ts, "canonical_url": cu,
+                             "passed_prefilter": _keep_candidate(job)})
+
         if not cu:
             continue
         if cu in seen:                           # already scored (any source/URL variant)
@@ -1631,6 +1684,8 @@ def main():
     log.info(f"Stage 1: {len(fresh)} fresh teasers "
              + (", ".join(f"{k}={v}" for k, v in by_site.items()) or "(none)")
              + f"  (skipped {dup_url} seen-URL, {dup_role} cross-source/prior-run duplicates)")
+    if LOG_RAW_TEASERS:
+        _log_raw_teasers(raw_seen, RAW_TEASERS)   # everything SEEN, not just what survived
 
     # Stage 2 — free pre-filter. Jobindex teasers carry a real snippet, so the full
     # INCLUDE/EXCLUDE keyword filter applies. Sources that deliver the FULL body with the
@@ -1638,17 +1693,7 @@ def main():
     # skipped INCLUDE entirely, which let broad Hub queries flood the LLM with unrelated
     # roles and was a main driver of junk matches. Only a body-less teaser from a non-snippet
     # source falls back to the lenient EXCLUDE-title-only guard.
-    def _keep_candidate(j):
-        if j.get("source_site") == "thehub":
-            title = f" {j['title']} ".lower()
-            if any(term in title for term in EXCLUDE_TERMS):
-                return False
-            body = j.get("_description", "")
-            if body:  # full body available -> require a real INCLUDE hit like any other ad
-                text = f" {j['title']} {body[:2500]} ".lower()
-                return any(term in text for term in INCLUDE_TERMS)
-            return True  # no body to judge -> keep, the LLM decides
-        return passes_prefilter(j)
+    # (_keep_candidate is defined above Stage 1, so the raw log records this same verdict.)
     candidates = [j for j in fresh if _keep_candidate(j)]
     log.info(f"Stage 2: {len(candidates)} passed keyword pre-filter")
     t_after_scrape = _mark("scrape", t0)

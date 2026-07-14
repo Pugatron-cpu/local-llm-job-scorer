@@ -238,16 +238,30 @@ TECH_TERMS = [
 # Foot-in-the-door roles. Kept by the LLM ONLY when the employer is a tech company.
 # Set BRIDGE_TERMS = [] to disable Track B entirely.
 BRIDGE_TERMS = [
-    "office assistant", "office coordinator", "office manager", "kontorassistent",
-    "workplace", "facilit", "reception", "front desk", "logistic", "logistik",
-    "koordinator", "coordinator", "operations", "administrativ", "support",
+    "office assistant", "office coordinator", "office manager",
+    "facilit", "reception", "front desk", "logistic", "logistik",
+    "koordinator", "coordinator", "operations", "support",
 ]
+# Dropped (measured against the archive, 2026-07-14): "administrativ" (26 titles), "kontorassistent"
+# (12) and "workplace" (5) each pulled real volume into the scorer and produced ZERO roles scoring
+# >=75, ever — and no role that scored >=75 was gated by them alone. Pure LLM cost, no recall.
 INCLUDE_TERMS = TECH_TERMS + BRIDGE_TERMS
 
-# Title-only exclusions.
+# Title-only exclusions. Every term below was checked against the archive: each hits real volume
+# and has NEVER cost a role that scored >=75. Add nothing here without running that check —
+# INCLUDE is a cheap recall gate (a false positive costs one LLM call), but EXCLUDE is a hard
+# veto, and a false positive here silently deletes a job you'd have wanted.
 EXCLUDE_TERMS = [
     "hr ", "human resources", "recruit", "rekrutter",
     "marketing", "markedsføring",
+    # Wrong domain for "analyst": finance/treasury analysts are the bulk of what the bare
+    # "analyst" INCLUDE term drags in. The scorer already caps them at <=35 — this stops them
+    # reaching it. (~16 titles, 0 good roles lost.)
+    "financial analyst", "finance analyst", "investment analyst", "aml ", "fp&a", "treasury",
+    # Wrong domain for "engineer": non-software engineering disciplines. (~20 titles, 0 lost.)
+    "mechanical", "electrical", "chemical", "construction",
+    # Never a fit, and high volume: sales (40 titles), law, teaching, management/kitchen "chef".
+    "sales", " salg", "jurist", "legal counsel", "underviser", "chef",
 ]
 
 # --- source: The Hub (thehub.io) -----------------------------------------------------
@@ -430,6 +444,15 @@ else:
 MASTER_ARCHIVE  = os.path.join(BASE_DIR, "job_market_data.csv")      # every scored role (the DB)
 MARKDOWN_REPORT = os.path.join(BASE_DIR, "Weekly_Job_Matches.md")
 RUNS_LOG        = os.path.join(BASE_DIR, "runs.csv")                 # one row per run: timing + funnel
+
+# Raw teaser log: EVERY posting the scraper sees, every run, written BEFORE dedup and before the
+# keyword pre-filter — so it records what was thrown away, not just what survived. The archive is
+# a biased sample by construction (only roles matching INCLUDE_TERMS get scored and kept); this is
+# the unfiltered record, and it's the one thing that cannot be backfilled later. Nothing in the
+# pipeline reads it. One row per posting per run, so repeat sightings of a still-live ad are the
+# point: they're what let you derive days-on-market, posting velocity and reposting employers.
+RAW_TEASERS     = os.path.join(BASE_DIR, "raw_teasers.csv")
+LOG_RAW_TEASERS = True    # set False to stop appending (the pipeline is unaffected either way)
 DEBUG_HTML_PATH = os.path.join(BASE_DIR, "_debug_first_page.html")
 TRACKER_CSV     = os.path.join(APPLICATIONS_DIR, "applications.csv") # the application tracker
 
