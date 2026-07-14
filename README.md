@@ -94,16 +94,33 @@ someone else, and `profile_check.py` is what makes it loud — it runs the profi
 through the profile's own gate and tells you if the two disagree.
 
 Per-profile keys (all optional; each falls back to the `config.py` default):
-`queries`, `thehub_queries`, `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms`,
-`ats_companies`, `excluded_companies`, `require_commutable`, `danish_ok`, `hide_danish_ads`,
-`track_b_bridge`, and the `brief_*` handoff wording.
 
-**Known limit — the scoring rubric is still tech-shaped.** `core.py`'s Track A means
-"SOFTWARE/DATA/IT technical" and explicitly caps `finance/audit` at ≤ 35; Track B means
-"foot-in-the-door **at a tech company**", and `is_tech_company` is an archive column. So a
-non-tech profile can now *search* correctly but will still be *scored* by tech criteria.
-Generalising that (profile-defined tracks, `is_tech_company` → `is_target_sector`, plus an archive
-migration) is the next piece of work.
+| what it controls | keys |
+|---|---|
+| what gets searched | `queries`, `thehub_queries`, `ats_companies`, `excluded_companies` |
+| the keyword gate | `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms` |
+| the scoring rubric | `track_a_def`, `track_b_def`, `hard_no`, `target_sector`, `track_b_bridge` |
+| the shortlist view | `accepted_employment_types`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
+| the brief handoff | the `brief_*` wording |
+
+**The rubric is per-profile too, and for a non-tech profile it has to be.** The `config.py`
+defaults are tech-shaped: Track A means "SOFTWARE/DATA/IT technical" and explicitly caps
+`finance/audit` at ≤ 35. Inherit that in another field and every role you scrape is capped at 35 by
+a rubric written for someone else — the pipeline reports success and the shortlist is empty. So a
+treasury profile sets its own `track_a_def`; `track_b_def = ""` drops the foot-in-the-door track
+entirely (the model is then told there is ONE kind of role and can only answer `"A"` or `"none"`).
+
+The two tracks are a **strategy, not a domain**: Track A is the roles you want, Track B is adjacent
+roles at employers in your target sector, taken as a way in. Only the vocabulary is domain-specific.
+
+Changing the rubric changes the scores, and old rows are then no longer comparable to new ones.
+`tests/test_score_prompt.py` pins the owner's rendered prompt byte-for-byte so that can't happen by
+accident; the defaults reproduce it exactly. If you edit the rubric deliberately, re-score
+(`a_scrape.py --rescore-all`) or accept that rows before and after are on different scales.
+
+**Known limit:** `is_tech_company` is still the archive *column name* (renaming it means an archive
+migration). For a non-tech profile, read it as "is the employer in this candidate's target sector",
+which is what `target_sector` defines.
 
 By default the tool runs for one owner against the top-level `job_market_data/` and
 `applications/` folders, exactly as above. The owner is whoever `JOBSEARCH_OWNER` names (see
