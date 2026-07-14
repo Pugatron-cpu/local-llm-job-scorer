@@ -35,9 +35,75 @@ python c_prepare.py --new     # list only roles not applied to yet
 python c_prepare.py 3         # prep shortlist item #3   (or: python c_prepare.py <url>)
 python c_prepare.py --status <url> applied   # update a tracked role's status (also logs the transition)
 python c_prepare.py --score-tracker  # backfill model scores for roles added by URL (eval set)
+python c_prepare.py --rebrief <url>  # regenerate the brief for a role already in the tracker
+python c_prepare.py --archive-briefs # sweep settled briefs out of the queue into _archive/
 ```
 
+`--rebrief` exists because prepping an exact-URL duplicate is deliberately a no-op (no re-fetch,
+no new brief), which leaves no way to recover a brief that went missing or refresh a stale one.
+It rewrites only the brief and the row's `brief_file`; status, dates and notes are never touched,
+and a settled role's brief is regenerated straight into `_archive/` rather than back into the
+queue. If the ad can't be fetched and the transform returns nothing, it refuses rather than
+overwrite a good brief with an empty one.
+
+## Running the scrape every morning (`jobctl.py`)
+
+```bash
+python jobctl.py on         # scrape daily at 06:00 Europe/Copenhagen
+python jobctl.py on weekly  # ...Mondays instead (e.g. once you've landed a job)
+python jobctl.py on monthly # ...the 1st instead
+python jobctl.py off        # stop it
+python jobctl.py status     # armed? what cadence? did the last scrape actually find anything?
+python jobctl.py run        # run it now
+python jobctl.py logs       # what it printed
+```
+
+**`off` means off.** `Persistent=true` does not keep it ticking while disarmed — it only means a
+run missed because the machine was *powered down* happens once at next boot, while the timer is
+on. The cadence lives only in the unit file (never mirrored into a config, so they can't drift);
+`status` reads it back out of systemd, so what it prints is what will actually happen.
+
+It installs a systemd **user** timer, so `on`/`off` need no `sudo` and it survives logout
+(linger is enabled for this user). `Persistent=true`, so a run missed while the box was off
+happens at next boot instead of being silently skipped. A few minutes of jitter keep the
+scrape off a fixed 06:00:00 heartbeat.
+
+**Only STEP A is automated.** `c_prepare.py` stays manual: briefs are written for roles *you*
+chose, not for everything the scraper finds.
+
+Two things the units handle that scheduled jobs usually get wrong. systemd never sources
+`~/.bashrc`, so `JOBSEARCH_OWNER` is captured into the unit at install time (without it the run
+dies picking a profile), and the venv interpreter is baked in by absolute path. The schedule
+also pins `Europe/Copenhagen` in `OnCalendar`, so it stays 06:00 Danish time across DST and even
+if the host is on UTC.
+
+`status` reads `runs.csv`, not just systemd. A scrape that exits 0 but finds nothing (a job board
+changed its markup) is the failure that otherwise goes unnoticed for weeks — so check the scored
+/ matches counts, not just "success".
+
 ## Profiles (running it for someone else)
+
+**Check a profile before you trust it: `python profile_check.py <name>`.** No scrape, no LLM, ~1s.
+
+A profile in another field (finance, treasury, law) inherits **tech-shaped defaults** —
+`TECH_TERMS` is full of `kubernetes` and `mlops`. Give it treasury queries but no treasury
+vocabulary and the pipeline does not fail: it scrapes fine, drops everything at the keyword gate,
+scores nothing, and returns an empty shortlist. From the outside, *"no results"* is indistinguishable
+from *"no such jobs exist in Denmark"*. That silent failure is the main trap in running this for
+someone else, and `profile_check.py` is what makes it loud — it runs the profile's own queries
+through the profile's own gate and tells you if the two disagree.
+
+Per-profile keys (all optional; each falls back to the `config.py` default):
+`queries`, `thehub_queries`, `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms`,
+`ats_companies`, `excluded_companies`, `require_commutable`, `danish_ok`, `hide_danish_ads`,
+`track_b_bridge`, and the `brief_*` handoff wording.
+
+**Known limit — the scoring rubric is still tech-shaped.** `core.py`'s Track A means
+"SOFTWARE/DATA/IT technical" and explicitly caps `finance/audit` at ≤ 35; Track B means
+"foot-in-the-door **at a tech company**", and `is_tech_company` is an archive column. So a
+non-tech profile can now *search* correctly but will still be *scored* by tech criteria.
+Generalising that (profile-defined tracks, `is_tech_company` → `is_target_sector`, plus an archive
+migration) is the next piece of work.
 
 By default the tool runs for one owner against the top-level `job_market_data/` and
 `applications/` folders, exactly as above. The owner is whoever `JOBSEARCH_OWNER` names (see
@@ -93,16 +159,64 @@ tracker row is added, so the dated `applications/*.md` files stay a clean "what 
 queue. Prepping also prints a heads-up listing any other roles you already track at that
 employer.
 
+The queue also **forgets**. A brief sits in `applications/` only while its role is still worth
+acting on (status `interested`, per `BRIEF_QUEUE_STATUSES`). The moment a role settles
+(applied / rejected / skipped / ...) its brief is **moved** into `applications/_archive/` — moved,
+never deleted, and still resolved by name if you re-paste that URL. Without this the folder just
+grows: it hit 71 briefs for 7 live roles before the archive existed, drowning the "what to apply
+next" signal it was supposed to be.
+
+The sync runs **on every `c_prepare.py` invocation**, silently unless it actually moves something,
+and it works **both ways**: settle a role and its brief leaves the queue; put one back in play
+(status edited back to `interested`) and its brief comes back out of `_archive/`. So the tracker
+is the single source of truth and the folder follows it — edit `applications.csv` by hand however
+you like, and the next time you run the tool at all, the briefs sort themselves out. Files are
+only ever moved, never deleted or rewritten. `--archive-briefs` runs the same sync on demand and
+prints what it moves.
+
+Note that a hand-edited status still skips what `--status` gives you: the `status_history.csv`
+transition row (which `b_insights --funnel` reads for response times) and the tracker snapshot.
+The archive self-heals; the funnel history does not.
+
 ## What it produces
 
 - `job_market_data/job_market_data.csv` — the archive: every scored role.
 - `job_market_data/Weekly_Job_Matches.md` — the open shortlist (the actionable list).
 - `job_market_data/runs.csv` — one row per run: timing + funnel counts.
-- `applications/` — per-role Application Briefs + `applications.csv` (the tracker) +
-  `status_history.csv` (append-only log of every status change, for funnel timing).
+- `job_market_data/raw_teasers.csv` — **every posting the scraper saw**, every run, logged before
+  dedup and before the keyword gate, with the `passed_prefilter` verdict on each. See below.
+- `applications/` — the live queue: an Application Brief per role still worth acting on, plus
+  `applications.csv` (the tracker) and `status_history.csv` (append-only log of every status
+  change, for funnel timing).
+  - `applications/_archive/` — briefs for settled roles. Moved here, never deleted; still
+    reachable, and their filenames stay reserved so a `brief_file` always names one brief.
+  - `applications/_backups/` — timestamped tracker snapshots, taken before any rewrite of
+    `applications.csv`. The last `TRACKER_BACKUPS_KEEP` (3) are kept; hand-named ones
+    (e.g. `.bak-manualfix-...`) are never auto-pruned.
 
 (For a profile run, the same files live under `job_market_data/_profiles/<name>/` and
 `applications/_profiles/<name>/`.)
+
+### `raw_teasers.csv` — the unfiltered record
+
+The archive is a **biased sample by construction**: only roles matching `INCLUDE_TERMS` get scored
+and kept, so roughly 4 in 5 of what the scraper actually sees is discarded in memory. That's right
+for a job search and useless for anything else. `raw_teasers.csv` is the unfiltered record, and
+it's the one thing that **cannot be backfilled** — miss a day and that day is gone.
+
+One row per posting **per run**, so a still-live ad re-seen on nine consecutive runs writes nine
+rows. That repetition is the signal: it's what lets you derive days-on-market, posting velocity,
+which employers repost, and seasonality. Group by `canonical_url` at analysis time. The
+`passed_prefilter` column records the keyword gate's verdict, so you can also ask what your own
+search terms are throwing away, and tune them against real data instead of guessing.
+
+Nothing in the pipeline reads this file. The write happens before dedup/filtering/scoring, adds no
+fetch and no LLM call, and is wrapped so that if it ever fails the scrape carries on regardless.
+Set `LOG_RAW_TEASERS = False` in `config.py` to stop appending. Volume is ~250 rows/day.
+
+Caveat worth remembering: it captures what *your scraper* surfaced (your `TARGET_QUERIES` on
+Jobindex, plus The Hub), not the whole Danish market. Change the queries and the coverage changes
+with them, so read it as "everything my scraper saw", not "everything that existed".
 
 ## Data & privacy
 
@@ -124,6 +238,13 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `THEHUB_*` — The Hub source (on; endpoint verified). `JOBNET_*` — Jobnet scaffold (off).
 - `ATS_COMPANIES` — your target-employer watchlist (`"greenhouse:<slug>"` / `"lever:<slug>"`);
   `ATS_LOCATION_KEEP` — locations to keep. `ATS_ENABLED` toggles the whole source.
+
+- `INCLUDE_TERMS` (= `TECH_TERMS` + `BRIDGE_TERMS`) and `EXCLUDE_TERMS` — the Stage-2 keyword gate.
+  **The two are not symmetric.** INCLUDE is a cheap recall gate: a false positive costs one LLM
+  call, so err on the side of keeping a term. EXCLUDE is a hard veto: a false positive silently
+  deletes a role you'd have wanted, and you'll never know. Never add an EXCLUDE term without
+  first checking it against the archive — count the titles it hits and how many of them ever
+  scored >= 75. If that second number isn't zero, don't add it.
 
 The employment-type and commute filters are **views**: every role is scored on merit and
 stored regardless, so changing a filter re-surfaces matching roles without re-scoring.

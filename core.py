@@ -939,34 +939,37 @@ SCORE_SCHEMA = {
                  "work_mode", "commute_ok", "danish_level", "reasoning"],
 }
 
-def score_job(job: dict, description: str, model: str | None = None) -> dict:
-    """Score one job. `model` overrides config.MODEL for comparing candidate models on
-    identical inputs; default (None) uses config.MODEL and behaviour is unchanged."""
-    prompt = f"""You are screening jobs for a candidate. Score the fit 0-100.
-There are TWO acceptable kinds of role.
+def _score_prompt(job: dict, description: str) -> str:
+    """Build the scoring prompt.
 
-TRACK A — technical / data role (preferred):
-  data analyst, BI, data/AI/ML engineering, IT/service-desk support, software,
-  automation, etc. Score by overlap with the candidate's skills and projects.
-    85-100: technical role closely matching the skills/projects.
-    60-84 : technical but only partial overlap, or borderline seniority.
-  "Technical" means SOFTWARE/DATA/IT technical. A role in an unrelated engineering or
-  science domain (mechanical, civil, electrical, chemical, construction, lab/clinical,
-  pharma QA, finance/audit, legal) scores <= 35 UNLESS its day-to-day tasks are
-  substantially programming, data or IT work matching the candidate's actual skills.
-  Do not award points for the word "engineer" or "analyst" alone.
+    Extracted from score_job() so it can be PINNED by a golden test. The archive holds 1500+ roles
+    scored with this exact text, and applications.csv is becoming an eval set (your status decision
+    next to the model's score). Change the prompt and old scores stop being comparable to new ones,
+    silently. tests/test_score_prompt.py asserts the rendered text byte-for-byte, so any edit that
+    would move the scores fails loudly instead."""
+    # The candidate's bridge experience is the one PERSONAL fact in this prompt. It used to be a
+    # hardcoded sentence of the owner's CV right here, which meant every other profile was scored
+    # against it. It now comes from the active profile (track_b_bridge), and is omitted entirely
+    # when a profile doesn't set one, rather than rendering a dangling "via , then move laterally".
+    bridge = (f" The candidate wants to enter a\n"
+              f"  tech company via {TRACK_B_BRIDGE},\n"
+              f"  then move laterally." if TRACK_B_BRIDGE else "")
 
-TRACK B — foot-in-the-door role AT a tech company:
-  office assistant, reception, front desk, workplace/facilities, logistics,
-  operations, coordinator, administration, support. The candidate wants to enter a
-  tech company via 7 years of combined corporate-operations and hospitality experience,
-  then move laterally.
-    Score 70-90 ONLY IF the EMPLOYER is clearly a software / IT / AI / data / tech company.
-    If the employer is NOT a tech company, score these <= 35.
+    # Track B is optional. Dropped entirely (not left as an empty heading) for a candidate who
+    # only wants direct matches — and the intro and the "track" instruction below follow suit,
+    # so the model is never offered a "B" it isn't supposed to use.
+    track_b = TRACK_B_DEF.format(bridge=bridge) + "\n\n" if TRACK_B_DEF else ""
+    intro = ("There are TWO acceptable kinds of role." if TRACK_B_DEF
+             else "There is ONE acceptable kind of role.")
+    track_values = '"A", "B", or "none"' if TRACK_B_DEF else '"A" or "none"'
+    hard_no = HARD_NO + "\n\n" if HARD_NO else ""
 
-Any HR, marketing, or sales role scores 0.
+    return f"""You are screening jobs for a candidate. Score the fit 0-100.
+{intro}
 
-EMPLOYMENT TYPE (Danish market — classify factually; this does NOT affect the score,
+{TRACK_A_DEF}
+
+{track_b}{hard_no}EMPLOYMENT TYPE (Danish market — classify factually; this does NOT affect the score,
 a downstream filter handles the candidate's current availability):
   - "student"    : studenterjob / studentermedhjælper / student assistant.
   - "part_time"  : deltid — a non-student part-time role.
@@ -992,8 +995,8 @@ ALSO extract:
                         Does NOT affect the score; it is a flag for the candidate.
   - "deadline"        : application deadline as "YYYY-MM-DD" if clearly stated, else "".
 
-Set "track" to "A", "B", or "none", and "is_tech_company" to whether the employer is a
-software/IT/AI/data/tech company.
+Set "track" to {track_values}, and "is_tech_company" to whether the employer is a
+{TARGET_SECTOR}.
 
 Candidate profile:
 {CANDIDATE_PROFILE}
@@ -1005,6 +1008,12 @@ Description:
 
 Respond with ONLY a JSON object, no markdown fences, no other text, exactly like:
 {{"score": 0-100, "track": "A"|"B"|"none", "is_tech_company": true|false, "employment_type": "student"|"part_time"|"full_time"|"internship"|"unknown", "work_mode": "onsite"|"hybrid"|"remote"|"unknown", "location": "city"|"", "commute_ok": true|false, "danish_level": "none"|"preferred"|"required", "deadline": "YYYY-MM-DD"|"", "reasoning": "one sentence", "matched_skills": ["skill", "skill"]}}"""
+
+
+def score_job(job: dict, description: str, model: str | None = None) -> dict:
+    """Score one job. `model` overrides config.MODEL for comparing candidate models on
+    identical inputs; default (None) uses config.MODEL and behaviour is unchanged."""
+    prompt = _score_prompt(job, description)
 
     payload = {
         "model": model or MODEL,

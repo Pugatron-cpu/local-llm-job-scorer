@@ -400,6 +400,84 @@ CANDIDATE_NAME    = (_prof.get("name") or "").strip()
 if not CANDIDATE_PROFILE or not LOCATION_ANCHOR:
     sys.exit(f"Profile '{ACTIVE_PROFILE}' must set both candidate_profile and location_anchor "
              f"(see profiles/_template.toml).")
+
+# The one PERSONAL fact in the scoring prompt: the bridge experience Track B leans on. It used to
+# be a hardcoded sentence of the owner's CV inside core.py's Track B text, which silently scored
+# every other profile against it. A profile that omits this key drops the sentence entirely.
+TRACK_B_BRIDGE = (_prof.get("track_b_bridge") or "").strip()
+
+# --- the scoring RUBRIC, per profile -------------------------------------------------------
+# The two tracks are a STRATEGY, not a domain: Track A = the roles you actually want, Track B =
+# adjacent roles at employers in your target sector, taken as a way in. Only the VOCABULARY is
+# domain-specific — and it used to be hardcoded as tech ("Technical means SOFTWARE/DATA/IT",
+# "finance/audit scores <= 35"), which meant a treasury profile could scrape perfectly and then
+# have every single role capped at 35 by a rubric written for someone else.
+#
+# The defaults below reproduce the owner's prompt EXACTLY, byte for byte — 1500+ archived roles
+# were scored with this text, and tests/test_score_prompt.py fails if it drifts.
+#
+# TRACK_B_DEF = "" disables Track B entirely: the block is dropped, the intro says ONE kind of
+# role, and the model is told to answer "A" or "none". Set it for anyone who only wants direct
+# matches (no foot-in-the-door roles).
+TRACK_A_DEF = """TRACK A — technical / data role (preferred):
+  data analyst, BI, data/AI/ML engineering, IT/service-desk support, software,
+  automation, etc. Score by overlap with the candidate's skills and projects.
+    85-100: technical role closely matching the skills/projects.
+    60-84 : technical but only partial overlap, or borderline seniority.
+  "Technical" means SOFTWARE/DATA/IT technical. A role in an unrelated engineering or
+  science domain (mechanical, civil, electrical, chemical, construction, lab/clinical,
+  pharma QA, finance/audit, legal) scores <= 35 UNLESS its day-to-day tasks are
+  substantially programming, data or IT work matching the candidate's actual skills.
+  Do not award points for the word "engineer" or "analyst" alone."""
+
+TRACK_B_DEF = """TRACK B — foot-in-the-door role AT a tech company:
+  office assistant, reception, front desk, workplace/facilities, logistics,
+  operations, coordinator, administration, support.{bridge}
+    Score 70-90 ONLY IF the EMPLOYER is clearly a software / IT / AI / data / tech company.
+    If the employer is NOT a tech company, score these <= 35."""
+
+HARD_NO = "Any HR, marketing, or sales role scores 0."
+
+# What the is_tech_company column MEANS for this profile. The column name is tech-flavoured for
+# historical reasons (renaming it is an archive migration); read it as "is the employer in this
+# candidate's target sector".
+TARGET_SECTOR = "software/IT/AI/data/tech company"
+
+if _prof.get("track_a_def"):
+    TRACK_A_DEF = str(_prof["track_a_def"]).strip()
+if "track_b_def" in _prof:                # "" is meaningful: it disables Track B
+    TRACK_B_DEF = str(_prof["track_b_def"]).strip()
+if "hard_no" in _prof:
+    HARD_NO = str(_prof["hard_no"]).strip()
+if _prof.get("target_sector"):
+    TARGET_SECTOR = str(_prof["target_sector"]).strip()
+
+# Shortlist VIEW filters — these decide what reaches the report, not what gets scored.
+# Both were global and tech/student-shaped: a full-time candidate would have had every role she
+# wants filtered out of her own shortlist by ACCEPTED_EMPLOYMENT_TYPES={"student", ...}.
+if _prof.get("accepted_employment_types"):
+    ACCEPTED_EMPLOYMENT_TYPES = {str(t).lower() for t in _prof["accepted_employment_types"]}
+if _prof.get("score_threshold"):
+    SCORE_THRESHOLD = int(_prof["score_threshold"])
+
+# The Stage-2 keyword gate, per profile. The defaults above are TECH-SHAPED (TECH_TERMS is full of
+# "kubernetes", "mlops", ...), so a profile in another field — finance, treasury, law — MUST bring
+# its own vocabulary or the gate silently drops nearly everything it scrapes: the pipeline runs
+# fine, finds nothing, and looks like an empty market. Use profile_check.py to see what a term set
+# would actually match BEFORE trusting a run.
+#   include_terms          -> replaces the whole INCLUDE list (TECH + BRIDGE together)
+#   tech_terms/bridge_terms-> replace just that half (bridge_terms = [] disables Track B)
+#   exclude_terms          -> replaces the title-only veto list
+if _prof.get("tech_terms"):
+    TECH_TERMS = [str(t).lower() for t in _prof["tech_terms"]]
+if "bridge_terms" in _prof:              # may legitimately be [] -> no Track B
+    BRIDGE_TERMS = [str(t).lower() for t in _prof["bridge_terms"]]
+INCLUDE_TERMS = TECH_TERMS + BRIDGE_TERMS          # recomputed: the halves may have changed
+if _prof.get("include_terms"):           # wholesale override wins over the halves
+    INCLUDE_TERMS = [str(t).lower() for t in _prof["include_terms"]]
+if "exclude_terms" in _prof:
+    EXCLUDE_TERMS = [str(t).lower() for t in _prof["exclude_terms"]]
+
 if _prof.get("queries"):
     TARGET_QUERIES = [str(q) for q in _prof["queries"]]
 if _prof.get("thehub_queries"):
