@@ -432,3 +432,11 @@ MARKDOWN_REPORT = os.path.join(BASE_DIR, "Weekly_Job_Matches.md")
 RUNS_LOG        = os.path.join(BASE_DIR, "runs.csv")                 # one row per run: timing + funnel
 DEBUG_HTML_PATH = os.path.join(BASE_DIR, "_debug_first_page.html")
 TRACKER_CSV     = os.path.join(APPLICATIONS_DIR, "applications.csv") # the application tracker
+
+# APPLICATIONS_DIR is the live queue: only roles still worth acting on. Settled briefs are MOVED
+# (never deleted) into the _archive/ subfolder, and tracker backups into _backups/. Those two
+# paths are resolved from APPLICATIONS_DIR at call time (c_prepare._archive_dir/_backup_dir), NOT
+# stored here: a derived copy would go stale the moment APPLICATIONS_DIR is repointed at another
+# profile, and a stale archive path means files get MOVED into the wrong folder.
+TRACKER_BACKUPS_KEEP = 3   # auto .bak-<timestamp> copies to retain; 0 = keep every one
+BRIEF_QUEUE_STATUSES = ["interested"]   # tracker statuses that keep a brief in the live queue
