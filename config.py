@@ -455,7 +455,7 @@ if _prof.get("target_sector"):
 # Shortlist VIEW filters — these decide what reaches the report, not what gets scored.
 # Both were global and tech/student-shaped: a full-time candidate would have had every role she
 # wants filtered out of her own shortlist by ACCEPTED_EMPLOYMENT_TYPES={"student", ...}.
-if _prof.get("accepted_employment_types"):
+if "accepted_employment_types" in _prof:
     ACCEPTED_EMPLOYMENT_TYPES = {str(t).lower() for t in _prof["accepted_employment_types"]}
 if _prof.get("score_threshold"):
     SCORE_THRESHOLD = int(_prof["score_threshold"])
@@ -468,23 +468,28 @@ if _prof.get("score_threshold"):
 #   include_terms          -> replaces the whole INCLUDE list (TECH + BRIDGE together)
 #   tech_terms/bridge_terms-> replace just that half (bridge_terms = [] disables Track B)
 #   exclude_terms          -> replaces the title-only veto list
-if _prof.get("tech_terms"):
+if "tech_terms" in _prof:
     TECH_TERMS = [str(t).lower() for t in _prof["tech_terms"]]
 if "bridge_terms" in _prof:              # may legitimately be [] -> no Track B
     BRIDGE_TERMS = [str(t).lower() for t in _prof["bridge_terms"]]
 INCLUDE_TERMS = TECH_TERMS + BRIDGE_TERMS          # recomputed: the halves may have changed
-if _prof.get("include_terms"):           # wholesale override wins over the halves
+if "include_terms" in _prof:           # wholesale override wins over the halves
     INCLUDE_TERMS = [str(t).lower() for t in _prof["include_terms"]]
 if "exclude_terms" in _prof:
     EXCLUDE_TERMS = [str(t).lower() for t in _prof["exclude_terms"]]
 
-if _prof.get("queries"):
+# `in _prof`, NOT _prof.get(): an EMPTY LIST is falsy in Python, so `thehub_queries = []` — a
+# profile deliberately switching a source off — was silently ignored, and the profile inherited
+# the OWNER's queries instead. That is how a treasury profile ended up scraping a Nordic tech
+# startup board with someone else's keywords. An empty list is a decision; honour it.
+if "queries" in _prof:
     TARGET_QUERIES = [str(q) for q in _prof["queries"]]
-if _prof.get("thehub_queries"):
+if "thehub_queries" in _prof:
     THEHUB_QUERIES = [str(q) for q in _prof["thehub_queries"]]
+    THEHUB_ENABLED = THEHUB_ENABLED and bool(THEHUB_QUERIES)   # no queries -> source is off
 if "ats_companies" in _prof:            # per-person target-employer watchlist (may be [])
     ATS_COMPANIES = [str(x) for x in _prof["ats_companies"]]
-if _prof.get("excluded_companies"):
+if "excluded_companies" in _prof:
     EXCLUDED_COMPANIES = [str(x).lower() for x in _prof["excluded_companies"]]
 if "require_commutable" in _prof:
     REQUIRE_COMMUTABLE = bool(_prof["require_commutable"])
