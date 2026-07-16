@@ -67,6 +67,19 @@ queries = [
 # anywhere). Default is true (apply the location_anchor above). Uncomment to disable.
 # require_commutable = false
 
+# OPTIONAL — the DETERMINISTIC commute check's geography (lowercase place names; a stated
+# job location matching one of these counts as commutable, a known Danish city matching none
+# of them counts as not commutable). The default is the owner's Copenhagen circle, so anyone
+# anchored elsewhere should set their own list here — it should agree with location_anchor
+# above. Set to [] to switch the deterministic check off (the scorer's judgment then stands).
+# commutable_areas = ["aarhus", "skanderborg", "randers", "remote"]
+
+# OPTIONAL — skill names to detect in ad text (case-insensitive whole words). When set, the
+# archive's matched_skills column becomes a deterministic "which of THESE appear in the ad"
+# instead of the model's free-associated list — better for the b_insights skill-demand table.
+# Omit (or []) to keep the model's list.
+# skills_vocab = ["python", "sql", "power bi", "excel", "azure", "docker"]
+
 # OPTIONAL — Application Brief handoff wording (c_prepare). The brief ends with an instruction
 # to a downstream Claude on how to draft the CV + letter for THIS person. All optional; the
 # defaults are neutral and generic. Set them to personalise the handoff:

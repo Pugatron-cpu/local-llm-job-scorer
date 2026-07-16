@@ -105,6 +105,22 @@ ACCEPTED_EMPLOYMENT_TYPES = {"student", "part_time", "internship", "unknown"}
 # filter entirely (e.g. if you can relocate). To include Sweden, edit the prompt in core.py.
 REQUIRE_COMMUTABLE = True
 
+# Commutable areas for the DETERMINISTIC commute check (extractors.commute_ok): a stated
+# location matching one of these (lowercase substring) is confidently commutable; a known
+# Danish city matching none of them is confidently NOT; anything else is left to the LLM.
+# This replaces asking the LLM to do Danish geography, which it gets wrong. "remote" is in
+# the set because a remote role is reachable by definition. The default is the OWNER's
+# Copenhagen rule (the same ~45-min-from-Ørestad circle LOCATION_ANCHOR describes) — a
+# profile anchored ANYWHERE ELSE must set its own commutable_areas list in its toml, or
+# set it to [] to switch the deterministic check off (the LLM's judgment then stands).
+COMMUTABLE_AREAS = {
+    "copenhagen", "københavn", "kbh", "frederiksberg", "lyngby", "glostrup", "ballerup",
+    "hellerup", "roskilde", "ørestad", "orestad", "herlev", "gentofte", "gladsaxe",
+    "søborg", "valby", "brøndby", "hvidovre", "rødovre", "albertslund", "taastrup",
+    "ishøj", "kastrup",
+    "remote",
+}
+
 # The report shows only roles likely STILL OPEN:
 #   stated deadline passed -> dropped; future deadline -> kept until then (trusted over age);
 #   no deadline -> kept until REPORT_FRESH_DAYS after first seen, then assumed filled.
@@ -493,6 +509,17 @@ if "excluded_companies" in _prof:
     EXCLUDED_COMPANIES = [str(x).lower() for x in _prof["excluded_companies"]]
 if "require_commutable" in _prof:
     REQUIRE_COMMUTABLE = bool(_prof["require_commutable"])
+# commutable_areas: the deterministic commute check's geography (see COMMUTABLE_AREAS
+# above). The default is the owner's Copenhagen circle, so a profile anchored anywhere else
+# MUST bring its own list — or set [] to disable the deterministic check entirely (the
+# LLM's commute_ok judgment, driven by the profile's location_anchor, then stands).
+if "commutable_areas" in _prof:
+    COMMUTABLE_AREAS = {str(a).lower() for a in _prof["commutable_areas"]}
+
+# skills_vocab: the skill names extract_matched_skills looks for in ad text (deterministic
+# whole-word matching, replacing the LLM's free-associated matched_skills list). Optional:
+# no list (or an empty one) -> the extractor stays silent and the LLM's list stands.
+SKILLS_VOCAB = [str(s) for s in (_prof.get("skills_vocab") or [])]
 # danish_ok = true: this person is comfortable in Danish, so DON'T hide Danish-required
 # roles from their shortlist. Maps to the EXCLUDE_DANISH_REQUIRED view filter.
 if "danish_ok" in _prof:

@@ -55,6 +55,7 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
 from config import *   # settings: paths, MODEL, thresholds, ACCEPTED_*, REQUIRE_COMMUTABLE, THEHUB_*, ...
+from extractors import parse_deadline   # shared deadline parser (regex lives in extractors.py)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -877,34 +878,12 @@ def _detect_lang(text: str):
         return None
 
 
-_DEADLINE_RE = re.compile(
-    r"(?:ans[øo]gningsfrist|frist|deadline|ans[øo]g\s+senest|s[øo]g\s+senest|senest\s+den"
-    r"|apply\s+(?:by|before|no\s+later\s+than)|closing\s+date)"
-    r"[:\s]*(?:den\s+)?"
-    r"(\d{1,2})[.\s/-]\s*(\d{1,2}|\w+)[.\s/-]\s*(\d{2,4})",
-    re.IGNORECASE,
-)
-_MONTHS = {m: i for i, m in enumerate(
-    ["januar", "februar", "marts", "april", "maj", "juni", "juli", "august",
-     "september", "oktober", "november", "december"], start=1)}
-
 def deadline_passed(text: str) -> bool:
-    """Best-effort: returns True only if we confidently parse a past deadline."""
-    m = _DEADLINE_RE.search(text)
-    if not m:
-        return False
-    day, mon, year = m.groups()
-    try:
-        day = int(day)
-        month = int(mon) if mon.isdigit() else _MONTHS.get(mon.lower())
-        if not month:
-            return False
-        year = int(year)
-        if year < 100:
-            year += 2000
-        return datetime(year, month, day).date() < datetime.now().date()
-    except (ValueError, TypeError):
-        return False
+    """Best-effort: returns True only if we confidently parse a past deadline.
+    The regex + month parsing moved to extractors.parse_deadline, shared with
+    extract_deadline (the cosmetic field), so the two can never disagree."""
+    d = parse_deadline(text)
+    return d is not None and d < datetime.now().date()
 
 # ---------------------------------------------------------------------------
 # STAGE 3b: LLM SCORING (structured output)
