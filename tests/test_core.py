@@ -229,6 +229,36 @@ class ShortlistRejectReason(unittest.TestCase):
             os.remove(path)
 
 
+class RawTeaserLog(unittest.TestCase):
+    def test_appending_to_old_schema_migrates_first(self):
+        """raw_teasers.csv written before the analytics columns existed must be realigned
+        before an append, or every new row would be silently column-shifted."""
+        fd, path = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        old_fields = [f for f in core.RAW_TEASER_FIELDS
+                      if f not in ("stated_salary", "stated_experience_years")]
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=old_fields)
+            w.writeheader()
+            w.writerow({k: "old" for k in old_fields})
+        try:
+            core._log_raw_teasers([{"title": "T", "url": "https://x/1",
+                                    "stated_salary": "35.000 kr./md."}], path)
+            with open(path, encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(rows[0]["title"], "old")                    # kept, by name
+            self.assertEqual(rows[0]["stated_salary"], "")               # new column blank
+            self.assertEqual(rows[1]["stated_salary"], "35.000 kr./md.")  # new row aligned
+        finally:
+            os.remove(path)
+
+    def test_analytics_columns_present(self):
+        self.assertIn("stated_salary", core.RAW_TEASER_FIELDS)
+        self.assertIn("stated_experience_years", core.RAW_TEASER_FIELDS)
+        self.assertIn("stated_salary", core.ARCHIVE_FIELDS)
+        self.assertIn("stated_experience_years", core.ARCHIVE_FIELDS)
+
+
 class MigrateCsv(unittest.TestCase):
     def test_realigns_changed_header(self):
         fd, path = tempfile.mkstemp(suffix=".csv")

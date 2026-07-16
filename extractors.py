@@ -322,3 +322,39 @@ def danish_level_floor(description: str):
                 continue
             return "required"
     return None
+
+# ---------------------------------------------------------------------------
+# ANALYTICS-ONLY CAPTURES (stated salary / stated experience)
+# ---------------------------------------------------------------------------
+# CAPTURE-ONLY: these two feed raw analytics columns (raw_teasers.csv + the archive) and are
+# NEVER read by scoring, filtering, or the shortlist. Raw matched string, no normalisation —
+# "35.000 kr./md." and "DKK 35,000 per month" are kept exactly as the ad wrote them; parse
+# at analysis time if you ever need numbers. Blank when absent.
+
+_SALARY_RE = re.compile(
+    # "DKK 35.000" / "kr. 160"            | "30.000-35.000 kr." / "160 DKK" / "35.000 kroner"
+    r"(?:(?:dkk|kr\.?)\s*\d[\d.,]*|(?:\d[\d.,]*\s*[-–]\s*)?\d[\d.,]*\s*(?:dkk|kr(?:oner)?)\b\.?)"
+    # optional period: "/md.", "pr. måned", "per month", "om måneden", "monthly", "/time"...
+    # (the connector itself is optional: "DKK 38,000 monthly" states one without it)
+    r"(?:\s*(?:/|pr\.?\s|per\s|om\s)?\s*(?:md\.?|mdr\.?|måned(?:en)?|month(?:ly)?|time(?:n)?"
+    r"|hour|år(?:et)?|year|annum))?",
+    re.IGNORECASE)
+
+_EXPERIENCE_RE = re.compile(
+    # "3 års erfaring" / "3-5 års erfaring" / "5+ years (of) experience" / "years' experience"
+    r"\d+\s*(?:[-–]\s*\d+)?\s*\+?\s*(?:års?\s+erfaring|years?'?\s+(?:of\s+)?experience)",
+    re.IGNORECASE)
+
+
+def extract_stated_salary(text: str) -> str:
+    """The first salary-looking kr/DKK amount stated in the text, as the RAW matched string
+    ("35.000 kr./md."), or "" when absent. Analytics capture only — see the block comment."""
+    m = _SALARY_RE.search(text or "")
+    return m.group(0).strip() if m else ""
+
+
+def extract_stated_experience(text: str) -> str:
+    """The first stated years-of-experience phrase ("3 års erfaring", "5+ years of
+    experience"), as the RAW matched string, or "" when absent. Analytics capture only."""
+    m = _EXPERIENCE_RE.search(text or "")
+    return m.group(0).strip() if m else ""

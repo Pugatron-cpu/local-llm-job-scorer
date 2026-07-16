@@ -259,5 +259,56 @@ class DanishLevelFloor(unittest.TestCase):
             "We work in English. Great snacks in the office."))
 
 
+class StatedSalary(unittest.TestCase):
+    """Analytics-only capture: the RAW matched string, no normalisation, "" when absent."""
+
+    def test_danish_patterns(self):
+        self.assertEqual(extractors.extract_stated_salary(
+            "Lønnen er 35.000 kr./md. plus pension."), "35.000 kr./md.")
+        self.assertEqual(extractors.extract_stated_salary(
+            "Du får 160 kr. pr. time."), "160 kr. pr. time")
+        self.assertEqual(extractors.extract_stated_salary(
+            "ca. 30.000 kroner om måneden"), "30.000 kroner om måneden")
+
+    def test_english_patterns(self):
+        self.assertEqual(extractors.extract_stated_salary(
+            "Salary: DKK 45,000 per month."), "DKK 45,000 per month")
+        self.assertEqual(extractors.extract_stated_salary(
+            "We pay 38000 DKK monthly."), "38000 DKK monthly")
+
+    def test_range_kept_raw(self):
+        self.assertEqual(extractors.extract_stated_salary(
+            "løn 30.000-35.000 kr. efter kvalifikationer"), "30.000-35.000 kr.")
+
+    def test_absent_is_blank(self):
+        self.assertEqual(extractors.extract_stated_salary(
+            "Competitive salary and great snacks."), "")
+
+    def test_krav_does_not_false_positive(self):
+        # "kr" inside "krav" (requirement) must not look like money.
+        self.assertEqual(extractors.extract_stated_salary(
+            "Dansk er et krav. 3 gode grunde til at søge."), "")
+
+
+class StatedExperience(unittest.TestCase):
+    def test_danish(self):
+        self.assertEqual(extractors.extract_stated_experience(
+            "Du har mindst 3 års erfaring med Python."), "3 års erfaring")
+        self.assertEqual(extractors.extract_stated_experience(
+            "gerne 3-5 års erfaring"), "3-5 års erfaring")
+
+    def test_english(self):
+        self.assertEqual(extractors.extract_stated_experience(
+            "You have 5+ years of experience with SQL."), "5+ years of experience")
+        self.assertEqual(extractors.extract_stated_experience(
+            "at least 2 years' experience in BI"), "2 years' experience")
+
+    def test_absent_is_blank(self):
+        self.assertEqual(extractors.extract_stated_experience(
+            "Experience with Python is a plus."), "")
+        self.assertEqual(extractors.extract_stated_experience(
+            "Vi tilbyder 25 feriedage."), "")
+
+
 if __name__ == "__main__":
     unittest.main()

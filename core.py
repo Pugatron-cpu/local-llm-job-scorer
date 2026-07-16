@@ -1230,7 +1230,8 @@ def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
 ARCHIVE_FIELDS = ["scraped_date", "title", "company", "location", "published_date",
                   "url", "track", "score", "employment_type", "work_mode", "commute_ok",
                   "danish_level", "ad_language", "is_tech_company", "deadline",
-                  "matched_skills", "source", "reasoning", "scoring_model"]
+                  "matched_skills", "source", "reasoning", "scoring_model",
+                  "stated_salary", "stated_experience_years"]
 # ad_language: the ad's detected WRITING language ("da"/"en"/"sv"/"no"/"" = undetected),
 # set deterministically by _detect_lang at scoring time — separate from danish_level, which
 # is the LLM's judgement of how much Danish the ROLE requires. Rows scored before this
@@ -1240,6 +1241,10 @@ ARCHIVE_FIELDS = ["scraped_date", "title", "company", "location", "published_dat
 # comparable within one model, so with presets (config.MODEL_PRESETS) every row records
 # which scale it is on. Rows from before this column have it blank; those were scored by
 # whatever MODEL was current at their scraped_date (see git history of config.py).
+# stated_salary / stated_experience_years: ANALYTICS-ONLY captures (extractors.py) — the
+# raw matched kr/DKK amount and years-of-experience phrase from the scored description,
+# exactly as the ad wrote them (no normalisation), blank when absent. NOTHING in the
+# pipeline reads them: not scoring, not the shortlist filters, not the report.
 
 def load_seen_urls(path: str) -> set:
     """Return the set of CANONICAL URLs already in the archive, so a role already scored
@@ -1660,6 +1665,9 @@ def _rescore_open(force: bool, limit: int):
             # row carries the same extractor-owned fields as a freshly scored one.
             merge_extracted_fields(job, desc)
             job["scoring_model"] = MODEL      # provenance: which scale this score is on
+            # Analytics-only captures (never read by the pipeline) — same as _score_worker.
+            job["stated_salary"] = extractors.extract_stated_salary(desc)
+            job["stated_experience_years"] = extractors.extract_stated_experience(desc)
             job["ad_language"] = _detect_lang(desc[:2000]) or ""
             if job["ad_language"] == "da" and job.get("danish_level") == "none":
                 job["danish_level"] = "preferred"
@@ -1675,7 +1683,13 @@ def _rescore_open(force: bool, limit: int):
 # ---------------------------------------------------------------------------
 
 RAW_TEASER_FIELDS = ["scrape_ts", "source_site", "title", "company", "location",
-                     "published_date", "url", "canonical_url", "snippet", "passed_prefilter"]
+                     "published_date", "url", "canonical_url", "snippet", "passed_prefilter",
+                     "stated_salary", "stated_experience_years"]
+# stated_salary / stated_experience_years: ANALYTICS-ONLY captures (extractors.py) — the raw
+# matched kr/DKK amount and "X års erfaring"/"X+ years" phrase as the ad wrote them, no
+# normalisation, blank when absent. NOTHING in the pipeline reads them (no scoring, no
+# filtering); they exist so market questions ("do student ads state pay?", "how much
+# experience does the market ask for?") can be answered from data that can't be backfilled.
 
 
 def _log_raw_teasers(rows: list, path: str):
@@ -1689,7 +1703,8 @@ def _log_raw_teasers(rows: list, path: str):
     if not rows:
         return
     try:
-        new = not os.path.isfile(path)
+        migrate_csv_if_needed(path, RAW_TEASER_FIELDS)   # columns added? realign first —
+        new = not os.path.isfile(path)                   # a bare append would misalign rows
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=RAW_TEASER_FIELDS)
@@ -1754,8 +1769,16 @@ def main():
         # drop as duplicates. A still-live ad re-seen on 9 consecutive runs writes 9 rows — that
         # repetition IS the signal (days-on-market). Dedup happens at analysis time, not here.
         if LOG_RAW_TEASERS:
+            # stated_salary / stated_experience_years: analytics-only regex captures over
+            # whatever text the teaser carries (title + snippet + inline body when the
+            # source supplied one). Never read by scoring or filtering.
+            raw_text = f"{job.get('title', '')} {job.get('snippet', '')} " \
+                       f"{job.get('_description', '')}"
             raw_seen.append({**job, "scrape_ts": scrape_ts, "canonical_url": cu,
-                             "passed_prefilter": _keep_candidate(job)})
+                             "passed_prefilter": _keep_candidate(job),
+                             "stated_salary": extractors.extract_stated_salary(raw_text),
+                             "stated_experience_years":
+                                 extractors.extract_stated_experience(raw_text)})
 
         if not cu:
             continue
@@ -1883,6 +1906,9 @@ def main():
         if res.get("reasoning") != "scoring error":
             job["_extract_stats"] = merge_extracted_fields(job, desc)
         job["scoring_model"] = MODEL          # provenance: which scale this score is on
+        # Analytics-only captures from the scored description (never read by the pipeline).
+        job["stated_salary"] = extractors.extract_stated_salary(desc)
+        job["stated_experience_years"] = extractors.extract_stated_experience(desc)
         # Deterministic ad WRITING language (independent of the LLM's danish_level, which is
         # the ROLE's requirement). Feeds the EXCLUDE_DANISH_ADS view filter + report flag.
         job["ad_language"] = _detect_lang(desc[:2000]) or ""
