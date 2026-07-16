@@ -2,9 +2,11 @@
 
 A local, privacy-preserving job-search tool: pulls roles from Jobindex, The Hub, and a
 watchlist of companies' public career APIs (plus an optional Jobnet scaffold), scores them
-against a profile with a local LLM (Ollama; model set by `MODEL` in `config.py`),
-de-duplicates across sources, and keeps an actionable, status-aware shortlist of
-currently-open matches.
+against a profile with a local LLM (Ollama; model chosen via `MODEL_PRESETS` in
+`config.py`), de-duplicates across sources, and keeps an actionable, status-aware shortlist
+of currently-open matches. The mechanical facts about each role (employment type, work
+mode, location, commute, deadline, skills) are owned by a deterministic extraction layer
+(`extractors.py`); the LLM does the fit judgment.
 
 Built end-to-end with Claude Code. It runs entirely on local hardware: the scoring model is
 served by a local Ollama instance, so job data and the candidate profile never leave the machine.
@@ -16,8 +18,9 @@ run them directly.
 
 | File | Role | When to run |
 |------|------|-------------|
-| **`config.py`** | All settings (search terms, filters, model, thresholds, profiles) | edit, don't run |
+| **`config.py`** | All settings (search terms, filters, model presets, thresholds, profiles) | edit, don't run |
 | **`core.py`** | The engine (scrape, fetch, score, archive, report) | imported, don't run |
+| **`extractors.py`** | Deterministic extraction of the mechanical fields (see below) | imported, don't run |
 | **`a_scrape.py`** | **STEP A** — search + score + rebuild the shortlist | first, and regularly |
 | **`b_insights.py`** | **STEP B** — insights over your data (read-only) | anytime, to see funnel / market / skills |
 | **`c_prepare.py`** | **STEP C** — prep a chosen role + log it to the tracker | when you pick a role |
@@ -26,6 +29,7 @@ run them directly.
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
+python a_scrape.py --model-preset fallback  # score with another MODEL_PRESETS entry (see below)
 python b_insights.py          # funnel + score-vs-behaviour + market + skill demand
 python b_insights.py --funnel # just the application funnel, response times & overdue chasing
 python b_insights.py --market # just the market view (score / Danish gate / employers)
@@ -101,6 +105,7 @@ Per-profile keys (all optional; each falls back to the `config.py` default):
 | the keyword gate | `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms` |
 | the scoring rubric | `track_a_def`, `track_b_def`, `hard_no`, `target_sector`, `track_b_bridge` |
 | the shortlist view | `accepted_employment_types`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
+| the deterministic extractors | `commutable_areas`, `skills_vocab` |
 | the brief handoff | the `brief_*` wording |
 
 **The rubric is per-profile too, and for a non-tech profile it has to be.** The `config.py`
@@ -195,6 +200,52 @@ Note that a hand-edited status still skips what `--status` gives you: the `statu
 transition row (which `b_insights --funnel` reads for response times) and the tracker snapshot.
 The archive self-heals; the funnel history does not.
 
+## Deterministic extraction (`extractors.py`)
+
+Several fields the scorer records are mechanical, not judgmental: whether an ad says
+"studentermedhjælper", which city it names, whether a stated deadline parses. The LLM gets
+those wrong occasionally (and differently per model); a keyword rule gets them right every
+time or knows that it doesn't know. So after each role is scored, a deterministic merge
+(`core.merge_extracted_fields`) overwrites the six mechanical fields — `employment_type`,
+`work_mode`, `location`, `commute_ok`, `deadline`, `matched_skills` — wherever an extractor
+is confident; where it isn't, the LLM's answer stands. The judgment fields (`score`,
+`track`, `reasoning`, `is_tech_company`) are never touched, and the scoring prompt is
+byte-for-byte unchanged, so scores stay on the archive's scale.
+
+The contract (pinned by the tests): extractors **fill fields, never filter** — nothing in
+this layer can drop a role — and they return a confident value or a sentinel, never a
+guess. `danish_level` is the one special case: an explicit "dansk er et krav" in the ad
+raises the LLM's grade to `required` (a floor; it can never lower it). Each run logs how
+many fields were set deterministically vs left to the LLM (`fields_det` / `fields_llm` in
+runs.csv) — that coverage is also the evidence gate for the future slim-prompt stage
+(`PLAN_STAGE5.md`).
+
+Two profile keys feed this layer (both optional, see `_template.toml`):
+
+- `commutable_areas` — the geography `commute_ok` checks stated locations against. The
+  `config.py` default is the owner's Copenhagen circle, so **a profile anchored anywhere
+  else must set its own list** (or `[]` to disable the deterministic check and let the
+  scorer's judgment stand).
+- `skills_vocab` — skill names to detect as whole words in ad text. When set,
+  `matched_skills` becomes "which of THESE appear in the ad" instead of the model's
+  free-associated list, which makes `b_insights --skills` far more comparable across roles.
+
+## Model presets (`MODEL_PRESETS`)
+
+Scores are only comparable within one model, so the model is managed explicitly:
+
+- `config.MODEL_PRESETS` defines `fast` (the 31B on the 48GB NVLink pool, 4 score workers —
+  the default, and exactly the historical behaviour) and `fallback` (a 16GB-class model for
+  the A4000, 1 worker; the tag is a placeholder — verify against `ollama list` before first
+  use).
+- Select with `--model-preset <name>` or `JOBSEARCH_MODEL_PRESET=<name>`. Selection is
+  **explicit only — there is no auto-failover**: every run preflights Ollama at start
+  (`core.ensure_model_available`) and exits loudly, naming both presets, if the chosen
+  model isn't being served. Silently switching models would silently change the score scale.
+- Every archived row is stamped with the exact model that scored it (`scoring_model`), and
+  runs.csv records the active preset + model per run. Rows from before the column are
+  blank.
+
 ## What it produces
 
 - `job_market_data/job_market_data.csv` — the archive: every scored role.
@@ -227,6 +278,12 @@ which employers repost, and seasonality. Group by `canonical_url` at analysis ti
 `passed_prefilter` column records the keyword gate's verdict, so you can also ask what your own
 search terms are throwing away, and tune them against real data instead of guessing.
 
+Two analytics-only columns ride along (here and in the archive): `stated_salary` and
+`stated_experience_years` — the raw kr/DKK amount and "X års erfaring"/"X+ years" phrase
+exactly as the ad wrote them, blank when absent. Nothing in the pipeline reads them; they
+exist so market questions ("do student ads state pay?") can be answered later from data
+that can't be backfilled.
+
 Nothing in the pipeline reads this file. The write happens before dedup/filtering/scoring, adds no
 fetch and no LLM call, and is wrapped so that if it ever fails the scrape carries on regardless.
 Set `LOG_RAW_TEASERS = False` in `config.py` to stop appending. Volume is ~250 rows/day.
@@ -251,7 +308,10 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `ACCEPTED_EMPLOYMENT_TYPES` — add `"full_time"` if your situation changes.
 - `REQUIRE_COMMUTABLE` — `True` keeps only commutable / remote roles; `False` drops the filter.
 - `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
-- `SCORE_THRESHOLD`, `TARGET_QUERIES`, `MODEL`.
+- `SCORE_THRESHOLD`, `TARGET_QUERIES`; the model via `MODEL_PRESETS` (+ `--model-preset` /
+  `JOBSEARCH_MODEL_PRESET` — see Model presets above).
+- `COMMUTABLE_AREAS` — the deterministic commute check's geography (per profile via
+  `commutable_areas`).
 - `THEHUB_*` — The Hub source (on; endpoint verified). `JOBNET_*` — Jobnet scaffold (off).
 - `ATS_COMPANIES` — your target-employer watchlist (`"greenhouse:<slug>"` / `"lever:<slug>"`);
   `ATS_LOCATION_KEEP` — locations to keep. `ATS_ENABLED` toggles the whole source.
@@ -268,8 +328,14 @@ stored regardless, so changing a filter re-surfaces matching roles without re-sc
 
 ## When you add/remove archive columns
 
-If you change `ARCHIVE_FIELDS` in `core.py`, the CSV header no longer matches. Back up and
-rebuild once:
+If you change `ARCHIVE_FIELDS` in `core.py`, the next run realigns the CSV in place
+automatically (`migrate_csv_if_needed`): existing values are kept by column name, new
+columns are left blank, removed ones dropped. The same applies to `runs.csv` and
+`raw_teasers.csv`. Blank values in old rows are expected, not corruption — e.g. rows
+scored before `scoring_model` existed simply don't say which model scored them.
+
+The migration can't un-scramble a file whose rows were already column-shifted by some
+earlier mismatched append. Only in that case, back up and rebuild:
 
 ```bash
 mv job_market_data/job_market_data.csv job_market_data/job_market_data.csv.bak
@@ -301,4 +367,6 @@ cp profiles/_template.toml profiles/yourname.toml
 `JOBSEARCH_OWNER` is unset it defaults to `owner`, and the tool will ask you to create
 `profiles/owner.toml`.
 
-Plus a running Ollama serving the model named in `config.py` (`MODEL`).
+Plus a running Ollama serving the active preset's model (`MODEL_PRESETS` in `config.py`).
+Every scoring run checks this at start and exits with instructions if the model isn't
+served — no scrape time is wasted first.

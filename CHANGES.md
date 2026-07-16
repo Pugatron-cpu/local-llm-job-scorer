@@ -120,3 +120,40 @@ synthetic-archive test run (migration, filters, dedup, both CLI tools) before de
   Read-only. Run it BEFORE trusting any model switch — including this one.
 - Gemma 4 note: with thinking disabled the 31B may emit an empty thought block before the
   JSON; the existing `{...}` parser fallback handles it. Keep `think: False` for scoring.
+
+---
+
+# Addendum — 2026-07-16 (deterministic extraction layer + model presets)
+
+Goal: the LLM does only the fit judgment; a deterministic layer owns the mechanical
+fields, identically whichever Ollama model is configured. The scoring prompt is
+byte-for-byte unchanged throughout (the golden test never moved), so scores stay on the
+archive's scale.
+
+- **New `extractors.py`** (pure functions, 50+ unit tests): employment type, work mode,
+  location, commute (against `COMMUTABLE_AREAS` / per-profile `commutable_areas`),
+  deadline (the regex moved from core so both consumers share one parser), matched skills
+  (per-profile `skills_vocab`), and an explicit-phrase Danish-required floor. Contract:
+  fill fields, never filter; confident value or sentinel, never a guess.
+- **Post-score merge** (`core.merge_extracted_fields`): confident extractor values
+  overwrite the LLM's mechanical fields, sentinels leave them standing; `danish_level` is
+  max-merged (floor). Wired in both scoring paths (normal + `--rescore`). The teaser's
+  source-provided location is preserved past `job.update(res)`, which used to destroy it.
+  Per-run `fields_det`/`fields_llm` counts in the log and runs.csv.
+- **Model presets + provenance**: `config.MODEL_PRESETS` (`fast` = the 31B/4 workers,
+  default, exactly the old behaviour; `fallback` = 16GB-class placeholder/1 worker),
+  selected only explicitly (`--model-preset` / `JOBSEARCH_MODEL_PRESET`). No auto-failover:
+  `ensure_model_available()` preflights Ollama at run start and exits loudly naming both
+  presets. Every archived row now records `scoring_model`; runs.csv records preset + model.
+- **Analytics-only captures**: `stated_salary` and `stated_experience_years` (raw matched
+  string, no normalisation) in raw_teasers.csv and the archive. Nothing reads them.
+- **Bug fixes along the way**: profile overrides using `_prof.get()` treated an empty list
+  as "not set" (a profile could not switch a source off; it inherited the owner's queries);
+  `_log_raw_teasers` appended with no schema migration, so any `RAW_TEASER_FIELDS` change
+  would have silently column-shifted every new row.
+- **`PLAN_STAGE5.md`**: the generation-2 slim-prompt change (LLM emits only judgment
+  fields) is documented, not built — gated on extractor-coverage evidence and a
+  `d_model_ab` model comparison (resurrect from git; removed in 0faff4b).
+
+First run after this: the archive, runs.csv and raw_teasers.csv are realigned in place
+automatically (new columns blank on old rows). Suite: 137 tests, green.
