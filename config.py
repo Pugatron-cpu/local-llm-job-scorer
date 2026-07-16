@@ -74,17 +74,60 @@ def _load_profile(name: str) -> dict:
 
 # --- model / Ollama ------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/generate"
-# Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
-# judgment/classification with structured output over mixed Danish/English ads. Gemma 4 is
-# trained on 140+ languages with balanced European representation and strong instruction
-# following; the 31B dense is the workstation flagship and q8_0 (34GB) fits the 48GB pool
-# with room for parallel KV slots at NUM_CTX below.
-# Alternatives, kept for reference (set MODEL to one of these to try it):
-#   "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
-#                        coding-focused, and the match-quality regression coincided with it.
-#   "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
-#                        14GB less VRAM -> more parallel headroom. Good speed fallback.
-MODEL      = "gemma4:31b-it-q8_0"
+
+# MODEL PRESETS — which Ollama model scores, and with how many parallel workers. Scores are
+# only comparable WITHIN one model, so the preset is stamped on every archive row
+# (scoring_model) and every runs.csv row, and selection is EXPLICIT ONLY: there is NO
+# auto-failover. If the chosen model isn't being served, the run fails loudly at start
+# (core.ensure_model_available) instead of silently switching to a model with a different
+# score scale.
+#
+#   "fast" (default — exactly the previous behaviour):
+#     Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
+#     judgment/classification with structured output over mixed Danish/English ads. Gemma 4
+#     is trained on 140+ languages with balanced European representation and strong
+#     instruction following; the 31B dense is the workstation flagship and q8_0 (34GB) fits
+#     the 48GB NVLink pool (2x3090) with room for parallel KV slots at NUM_CTX below.
+#   "fallback":
+#     A 16GB-class model for the RTX A4000, for when the pool is busy with other work.
+#     PLACEHOLDER — verify the exact tag against `ollama list` (and pull it) before first
+#     use; scores it produces are on ITS scale, not the 31B's (hence the provenance stamp).
+#   Alternatives, kept for reference (swap into a preset to try one):
+#     "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
+#                          coding-focused, and the match-quality regression coincided with it.
+#     "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
+#                          14GB less VRAM -> more parallel headroom. Good speed fallback.
+#
+# score_workers: EFFECTIVE concurrency = min(score_workers, the server's OLLAMA_NUM_PARALLEL)
+# — each slot needs its own KV cache; 4 fits the 48GB pool, the A4000 gets 1 (sequential).
+MODEL_PRESETS = {
+    "fast":     {"model": "gemma4:31b-it-q8_0", "score_workers": 4},
+    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1},   # PLACEHOLDER tag
+}
+
+
+def _read_model_preset() -> str:
+    """Peek at `--model-preset <name>` (or the JOBSEARCH_MODEL_PRESET env var) and REMOVE
+    the flag + value from sys.argv, same drill as _read_profile_flag: every tool does
+    `from config import *`, so the model must be resolved before anything imports it.
+    Defaults to "fast" — exactly today's behaviour when neither flag nor env var is set."""
+    name = os.environ.get("JOBSEARCH_MODEL_PRESET", "").strip()
+    if "--model-preset" in sys.argv:
+        i = sys.argv.index("--model-preset")
+        val = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        del sys.argv[i:i + 2]
+        name = val.strip()
+    return name.lower() or "fast"
+
+
+ACTIVE_MODEL_PRESET = _read_model_preset()
+if ACTIVE_MODEL_PRESET not in MODEL_PRESETS:
+    sys.exit(f"Unknown model preset '{ACTIVE_MODEL_PRESET}'. Available presets:\n"
+             + "\n".join(f"    {k:<8} -> {v['model']} ({v['score_workers']} worker(s))"
+                         for k, v in MODEL_PRESETS.items())
+             + "\nSelect one with `--model-preset <name>` or JOBSEARCH_MODEL_PRESET=<name>.")
+MODEL = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["model"]
+
 NUM_CTX    = 8192                  # room for a full description
 TIMEOUT_S  = 180                  # never let a hung request block the run
 
@@ -126,10 +169,10 @@ COMMUTABLE_AREAS = {
 #   no deadline -> kept until REPORT_FRESH_DAYS after first seen, then assumed filled.
 REPORT_FRESH_DAYS = 21
 
-# Stage 3b scoring parallelism. EFFECTIVE concurrency = min(SCORE_WORKERS, the server's
-# OLLAMA_NUM_PARALLEL) -- set OLLAMA_NUM_PARALLEL on `ollama serve` (each slot needs its own
-# KV cache; start 2-4 for a 27B on the 48 GB pool). 1 = sequential.
-SCORE_WORKERS = 4
+# Stage 3b scoring parallelism — comes from the active MODEL PRESET above (the 48GB pool
+# takes 4 parallel slots, the A4000 fallback runs sequential). Set OLLAMA_NUM_PARALLEL on
+# `ollama serve` to match; effective concurrency is min() of the two. 1 = sequential.
+SCORE_WORKERS = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["score_workers"]
 
 # Stage 3a fetch parallelism. Sync Playwright is thread-affine, so each worker owns its own
 # headless browser. Keep low (2-3) to stay polite to jobindex.dk. 1 = effectively sequential.

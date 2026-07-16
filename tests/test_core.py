@@ -317,6 +317,103 @@ class AtsWatchlist(unittest.TestCase):
             core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES = old_loc, old_exc
 
 
+class ModelPresets(unittest.TestCase):
+    """config.MODEL_PRESETS + selection: default 'fast' must reproduce today's behaviour
+    exactly, the flag/env selection must be explicit, and the preflight must fail LOUDLY
+    (naming every preset) rather than ever auto-switching models."""
+
+    def test_both_presets_exist_with_model_and_workers(self):
+        import config
+        for name in ("fast", "fallback"):
+            self.assertIn(name, config.MODEL_PRESETS)
+            self.assertTrue(config.MODEL_PRESETS[name]["model"])
+            self.assertGreaterEqual(config.MODEL_PRESETS[name]["score_workers"], 1)
+
+    @unittest.skipIf(os.environ.get("JOBSEARCH_MODEL_PRESET"),
+                     "JOBSEARCH_MODEL_PRESET is set in this shell")
+    def test_default_is_fast_and_drives_model_and_workers(self):
+        import config
+        self.assertEqual(config.ACTIVE_MODEL_PRESET, "fast")
+        self.assertEqual(config.MODEL, config.MODEL_PRESETS["fast"]["model"])
+        self.assertEqual(config.SCORE_WORKERS,
+                         config.MODEL_PRESETS["fast"]["score_workers"])
+
+    def test_read_model_preset_flag_env_and_default(self):
+        import config
+        old_argv = sys.argv[:]
+        old_env = os.environ.pop("JOBSEARCH_MODEL_PRESET", None)
+        try:
+            sys.argv = ["prog", "--model-preset", "Fallback", "--rescore"]
+            self.assertEqual(config._read_model_preset(), "fallback")
+            self.assertEqual(sys.argv, ["prog", "--rescore"])   # flag+value consumed
+            sys.argv = ["prog"]
+            self.assertEqual(config._read_model_preset(), "fast")   # default
+            os.environ["JOBSEARCH_MODEL_PRESET"] = "fallback"
+            self.assertEqual(config._read_model_preset(), "fallback")   # env var
+            sys.argv = ["prog", "--model-preset", "fast"]
+            self.assertEqual(config._read_model_preset(), "fast")   # flag beats env
+        finally:
+            sys.argv = old_argv
+            if old_env is not None:
+                os.environ["JOBSEARCH_MODEL_PRESET"] = old_env
+            else:
+                os.environ.pop("JOBSEARCH_MODEL_PRESET", None)
+
+
+class EnsureModelAvailable(unittest.TestCase):
+    """The preflight: passes silently when the active model is served; exits loudly —
+    naming BOTH presets and the selection mechanism — when it isn't. No auto-failover."""
+
+    class _Resp:
+        def __init__(self, models):
+            self._models = models
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"models": [{"name": n} for n in self._models]}
+
+    def test_served_model_passes(self):
+        from unittest import mock
+        with mock.patch.object(core.requests, "get",
+                               return_value=self._Resp([core.MODEL, "other:1b"])):
+            core.ensure_model_available()          # must not raise
+
+    def test_missing_model_exits_naming_all_presets(self):
+        from unittest import mock
+        with mock.patch.object(core.requests, "get",
+                               return_value=self._Resp(["something-else:7b"])):
+            with self.assertRaises(SystemExit) as cm:
+                core.ensure_model_available()
+        msg = str(cm.exception)
+        self.assertIn(core.MODEL, msg)
+        for preset, spec in core.MODEL_PRESETS.items():
+            self.assertIn(preset, msg)
+            self.assertIn(spec["model"], msg)
+        self.assertIn("--model-preset", msg)
+
+    def test_unreachable_server_exits_naming_all_presets(self):
+        from unittest import mock
+        with mock.patch.object(core.requests, "get",
+                               side_effect=OSError("connection refused")):
+            with self.assertRaises(SystemExit) as cm:
+                core.ensure_model_available()
+        msg = str(cm.exception)
+        for preset in core.MODEL_PRESETS:
+            self.assertIn(preset, msg)
+        self.assertIn("--model-preset", msg)
+
+
+class ScoringModelProvenance(unittest.TestCase):
+    def test_archive_has_the_column_and_rows_project_it(self):
+        self.assertIn("scoring_model", core.ARCHIVE_FIELDS)
+        row = core._row_from({"title": "T", "scoring_model": "gemma4:31b-it-q8_0"})
+        self.assertEqual(row["scoring_model"], "gemma4:31b-it-q8_0")
+
+    def test_runs_log_has_the_preset_columns(self):
+        self.assertIn("model_preset", core.RUNS_FIELDS)
+        self.assertIn("model", core.RUNS_FIELDS)
+
+
 class MergeExtractedFields(unittest.TestCase):
     """The post-score deterministic merge: confident extractor values OVERWRITE the LLM's
     mechanical fields, sentinels leave them standing, danish_level only ever gets a FLOOR,

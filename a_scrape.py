@@ -13,6 +13,12 @@ ads, scores them with the local LLM, appends to the archive
     python a_scrape.py --rescore-all # escape hatch: re-score ALL still-open shortlist rows
                                      # (not just flag-blank ones) — use after a model/prompt
                                      # change so the existing shortlist reflects it
+    python a_scrape.py --model-preset fallback
+                                     # score with another config.MODEL_PRESETS entry (e.g.
+                                     # the A4000-sized fallback). EXPLICIT only — no
+                                     # auto-failover; each model scores on its own scale
+                                     # (rows are stamped with scoring_model). Also settable
+                                     # via JOBSEARCH_MODEL_PRESET=<name>; default "fast".
 
 All settings live in config.py; personal data in profiles/<name>.toml; the engine in
 core.py. See README.md.

@@ -37,6 +37,7 @@ into your archive.
 """
 
 import os
+import sys
 import csv
 import re
 import json
@@ -990,6 +991,33 @@ Respond with ONLY a JSON object, no markdown fences, no other text, exactly like
 {{"score": 0-100, "track": "A"|"B"|"none", "is_tech_company": true|false, "employment_type": "student"|"part_time"|"full_time"|"internship"|"unknown", "work_mode": "onsite"|"hybrid"|"remote"|"unknown", "location": "city"|"", "commute_ok": true|false, "danish_level": "none"|"preferred"|"required", "deadline": "YYYY-MM-DD"|"", "reasoning": "one sentence", "matched_skills": ["skill", "skill"]}}"""
 
 
+def ensure_model_available():
+    """Preflight, called at run start BEFORE any scraping: confirm Ollama is up and the
+    ACTIVE preset's model is actually served. Fails LOUDLY (sys.exit) naming every preset —
+    deliberately no auto-failover, because each model scores on its own scale, and silently
+    switching models would silently make new rows incomparable to the archive."""
+    presets = "\n".join(
+        f"    {k:<8} -> {v['model']} ({v['score_workers']} worker(s))"
+        + ("   <- selected" if k == ACTIVE_MODEL_PRESET else "")
+        for k, v in MODEL_PRESETS.items())
+    how = ("  Select one: python a_scrape.py --model-preset <name>   "
+           "(or JOBSEARCH_MODEL_PRESET=<name>)")
+    tags_url = OLLAMA_URL.replace("/api/generate", "/api/tags")
+    try:
+        r = requests.get(tags_url, timeout=10)
+        r.raise_for_status()
+        served = {str(m.get("name", "")) for m in r.json().get("models", [])}
+    except Exception as e:
+        sys.exit(f"Ollama is unreachable at {tags_url} ({str(e)[:120]}).\n"
+                 f"  Start it (`ollama serve`), then pick a preset:\n{presets}\n{how}")
+    if MODEL not in served:
+        sys.exit(f"Model '{MODEL}' (preset '{ACTIVE_MODEL_PRESET}') is not served by Ollama.\n"
+                 f"  Installed models: {', '.join(sorted(served)) or '(none)'}\n"
+                 f"  Pull it (`ollama pull {MODEL}`) or pick a preset that is installed:\n"
+                 f"{presets}\n{how}")
+    log.info(f"Model preset: {ACTIVE_MODEL_PRESET} -> {MODEL} ({SCORE_WORKERS} score worker(s))")
+
+
 def score_job(job: dict, description: str, model: str | None = None) -> dict:
     """Score one job. `model` overrides config.MODEL for comparing candidate models on
     identical inputs; default (None) uses config.MODEL and behaviour is unchanged."""
@@ -1202,12 +1230,16 @@ def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
 ARCHIVE_FIELDS = ["scraped_date", "title", "company", "location", "published_date",
                   "url", "track", "score", "employment_type", "work_mode", "commute_ok",
                   "danish_level", "ad_language", "is_tech_company", "deadline",
-                  "matched_skills", "source", "reasoning"]
+                  "matched_skills", "source", "reasoning", "scoring_model"]
 # ad_language: the ad's detected WRITING language ("da"/"en"/"sv"/"no"/"" = undetected),
 # set deterministically by _detect_lang at scoring time — separate from danish_level, which
 # is the LLM's judgement of how much Danish the ROLE requires. Rows scored before this
 # column existed have it blank (migrate_archive_if_needed leaves new columns empty);
 # `python a_scrape.py --rescore` refreshes still-open shortlist rows with blank flags.
+# scoring_model: PROVENANCE — the exact model string that scored this row. Scores are only
+# comparable within one model, so with presets (config.MODEL_PRESETS) every row records
+# which scale it is on. Rows from before this column have it blank; those were scored by
+# whatever MODEL was current at their scraped_date (see git history of config.py).
 
 def load_seen_urls(path: str) -> set:
     """Return the set of CANONICAL URLs already in the archive, so a role already scored
@@ -1319,7 +1351,8 @@ class ArchiveWriter:
 RUNS_FIELDS = ["run_ts", "duration_s", "scrape_s", "fetch_gate_s", "score_s",
                "teasers", "prefiltered", "danish_early", "danish_body",
                "deadline_dropped", "fetched", "snippet_fallback", "scored",
-               "errors", "matches", "fields_det", "fields_llm"]
+               "errors", "matches", "fields_det", "fields_llm",
+               "model_preset", "model"]
 # snippet_fallback: roles whose page fetch failed (after a retry) and were scored on the
 # teaser only. Watch this column: a spike means Jobindex/ATS fetching broke, which silently
 # degrades BOTH match quality and danish_level accuracy.
@@ -1327,6 +1360,8 @@ RUNS_FIELDS = ["run_ts", "duration_s", "scrape_s", "fetch_gate_s", "score_s",
 # work_mode, location, commute_ok, deadline, matched_skills), how many the deterministic
 # extractors set vs left to the LLM's answer (see merge_extracted_fields). Old rows have
 # them blank (migrate_csv_if_needed).
+# model_preset / model: which config.MODEL_PRESETS entry (and exact model string) scored
+# this run — the run-level view of the per-row scoring_model provenance column.
 
 def _log_run(run_start, total_s, timings, funnel):
     """Append one row per run to runs.csv: when it ran, how long each stage took, and the
@@ -1572,6 +1607,7 @@ def _rescore_open(force: bool, limit: int):
     """Shared worker for the two re-score modes. `force=False` only touches rows with missing
     Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
     label = "--rescore-all" if force else "--rescore"
+    ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
     today = datetime.now().strftime("%Y-%m-%d")
     today_d = datetime.now().date()
     stale = []
@@ -1623,6 +1659,7 @@ def _rescore_open(force: bool, limit: int):
             # Same post-score deterministic merge as the main scoring path, so a re-scored
             # row carries the same extractor-owned fields as a freshly scored one.
             merge_extracted_fields(job, desc)
+            job["scoring_model"] = MODEL      # provenance: which scale this score is on
             job["ad_language"] = _detect_lang(desc[:2000]) or ""
             if job["ad_language"] == "da" and job.get("danish_level") == "none":
                 job["danish_level"] = "preferred"
@@ -1677,6 +1714,7 @@ def main():
     log.info(f"Active profile: {ACTIVE_PROFILE} "
              + ("(owner; persisting to the main data dirs)" if IS_OWNER
                 else f"(sandboxed -> {BASE_DIR}; nothing is written to your own data)"))
+    ensure_model_available()   # fail loudly NOW, not after a 20-minute scrape
     cutoff = datetime.now().date() - timedelta(days=MAX_DAYS_OLD)
     seen = load_seen_urls(MASTER_ARCHIVE)            # CANONICAL urls already in the archive
     seen_role_keys = load_seen_role_keys(MASTER_ARCHIVE)  # role fingerprints already scored
@@ -1844,6 +1882,7 @@ def main():
         # mechanical fields; sentinels leave them alone. Judgment fields untouched.
         if res.get("reasoning") != "scoring error":
             job["_extract_stats"] = merge_extracted_fields(job, desc)
+        job["scoring_model"] = MODEL          # provenance: which scale this score is on
         # Deterministic ad WRITING language (independent of the LLM's danish_level, which is
         # the ROLE's requirement). Feeds the EXCLUDE_DANISH_ADS view filter + report flag.
         job["ad_language"] = _detect_lang(desc[:2000]) or ""
@@ -1910,6 +1949,7 @@ def main():
         "snippet_fallback": fallback,
         "scored": archive.count, "errors": errors, "matches": shortlist_n,
         "fields_det": fields_det, "fields_llm": fields_llm,
+        "model_preset": ACTIVE_MODEL_PRESET, "model": MODEL,
     })
     log.info(f"Done in {total_s:.1f}s "
              f"(scrape {timings.get('scrape', 0):.1f}s, "
