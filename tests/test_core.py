@@ -317,6 +317,99 @@ class AtsWatchlist(unittest.TestCase):
             core.ATS_LOCATION_KEEP, core.EXCLUDED_COMPANIES = old_loc, old_exc
 
 
+class MergeExtractedFields(unittest.TestCase):
+    """The post-score deterministic merge: confident extractor values OVERWRITE the LLM's
+    mechanical fields, sentinels leave them standing, danish_level only ever gets a FLOOR,
+    and the judgment fields are never touched. Pure — no Ollama call involved."""
+
+    def _job(self, **kw):
+        """A job dict as it stands right after job.update(score_job(...)) — the LLM's
+        answers in place, the teaser's own location preserved under _source_location."""
+        base = {"title": "Data Analyst", "_source_location": "",
+                "score": 88, "track": "A", "is_tech_company": True,
+                "employment_type": "full_time", "work_mode": "remote",
+                "location": "Aalborg", "commute_ok": True,
+                "danish_level": "none", "deadline": "2099-01-01",
+                "reasoning": "llm says so", "matched_skills": ["python"]}
+        base.update(kw)
+        return base
+
+    def test_confident_values_overwrite_the_llm(self):
+        job = self._job(title="Studentermedhjælper til dataanalyse")
+        desc = ("Vi søger en studentermedhjælper til vores kontor i København. "
+                "Arbejdet foregår på kontoret. Ansøgningsfrist: 01-09-2026.")
+        core.merge_extracted_fields(job, desc)
+        self.assertEqual(job["employment_type"], "student")     # was full_time
+        self.assertEqual(job["work_mode"], "onsite")            # was remote
+        self.assertEqual(job["location"], "Copenhagen")         # was Aalborg
+        self.assertTrue(job["commute_ok"])                      # Copenhagen is commutable
+        self.assertEqual(job["deadline"], "2026-09-01")         # was 2099-01-01
+
+    def test_sentinels_keep_the_llm_values(self):
+        job = self._job()
+        stats = core.merge_extracted_fields(job, "A role. You will do great things.")
+        self.assertEqual(job["employment_type"], "full_time")   # LLM's stands
+        self.assertEqual(job["work_mode"], "remote")
+        # LLM's "Aalborg" stands (no confident extraction) — and the deterministic commute
+        # lookup DOES know Aalborg is not commutable, so that one is corrected.
+        self.assertEqual(job["location"], "Aalborg")
+        self.assertFalse(job["commute_ok"])
+        self.assertEqual(job["deadline"], "2099-01-01")
+        self.assertEqual(job["matched_skills"], ["python"])     # no vocab -> LLM's list
+        self.assertEqual(stats["det"], 1)                       # only commute_ok
+        self.assertEqual(stats["llm"], 5)
+
+    def test_judgment_fields_never_touched(self):
+        job = self._job(title="Studentermedhjælper")
+        core.merge_extracted_fields(job, "Studenterjob i København. Dansk er et krav.")
+        self.assertEqual(job["score"], 88)
+        self.assertEqual(job["track"], "A")
+        self.assertTrue(job["is_tech_company"])
+        self.assertEqual(job["reasoning"], "llm says so")
+
+    def test_source_location_preferred_over_llm(self):
+        job = self._job(_source_location="Lyngby", location="Odense")
+        core.merge_extracted_fields(job, "No city named in this text.")
+        self.assertEqual(job["location"], "Lyngby")             # teaser's own wins
+        self.assertTrue(job["commute_ok"])                      # ...and it's commutable
+        self.assertNotIn("_source_location", job)               # consumed, not archived
+
+    def test_danish_floor_lifts_but_never_lowers(self):
+        job = self._job(danish_level="none")
+        stats = core.merge_extracted_fields(job, "Dansk er et krav for rollen.")
+        self.assertEqual(job["danish_level"], "required")
+        self.assertEqual(stats["danish_lift"], 1)
+        job = self._job(danish_level="required")
+        stats = core.merge_extracted_fields(job, "English is fine. No Danish needed.")
+        self.assertEqual(job["danish_level"], "required")       # floor never lowers
+        self.assertEqual(stats["danish_lift"], 0)
+
+    def test_skills_vocab_overwrites_when_configured(self):
+        old = core.SKILLS_VOCAB
+        core.SKILLS_VOCAB = ["SQL", "Docker"]
+        try:
+            job = self._job()
+            core.merge_extracted_fields(job, "You will write SQL all day.")
+            self.assertEqual(job["matched_skills"], ["SQL"])    # LLM's ["python"] replaced
+            job = self._job()
+            core.merge_extracted_fields(job, "You will water the plants.")
+            self.assertEqual(job["matched_skills"], [])         # confident empty
+        finally:
+            core.SKILLS_VOCAB = old
+
+    def test_stats_cover_all_six_fields(self):
+        job = self._job()
+        stats = core.merge_extracted_fields(job, "Nothing extractable here.")
+        self.assertEqual(stats["det"] + stats["llm"], 6)
+
+    def test_never_drops_the_row(self):
+        # The merge FILLS fields; the job dict itself must always survive intact.
+        job = self._job(title="Studentermedhjælper eller fuldtid?!")
+        out = core.merge_extracted_fields(job, "praktik deltid fuldtid remote on-site kaos")
+        self.assertIsInstance(out, dict)
+        self.assertEqual(job["score"], 88)                      # still a scoreable row
+
+
 class TrackerScoreBackfill(unittest.TestCase):
     """c_prepare._fill_blanks: the safety core of --score-tracker. Must fill blanks only,
     treat score '0' as blank, and never overwrite an existing value."""
