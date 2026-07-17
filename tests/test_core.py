@@ -359,6 +359,21 @@ class ModelPresets(unittest.TestCase):
             self.assertTrue(config.MODEL_PRESETS[name]["model"])
             self.assertGreaterEqual(config.MODEL_PRESETS[name]["score_workers"], 1)
 
+    def test_presets_carry_endpoint_ctx_and_timeout(self):
+        """Each preset is pinned to an endpoint (which GPU serves it), a context window and a
+        per-request scoring timeout — not just a model + worker count."""
+        import config
+        for name in ("fast", "fallback"):
+            spec = config.MODEL_PRESETS[name]
+            self.assertTrue(spec["ollama_url"].startswith("http"))
+            self.assertGreaterEqual(spec["num_ctx"], 1024)
+            self.assertGreaterEqual(spec["score_timeout_s"], 1)
+        # fallback = the separate A4000 instance (:11435), smaller ctx than the 3090 pool.
+        self.assertIn(":11434", config.MODEL_PRESETS["fast"]["ollama_url"])
+        self.assertIn(":11435", config.MODEL_PRESETS["fallback"]["ollama_url"])
+        self.assertLess(config.MODEL_PRESETS["fallback"]["num_ctx"],
+                        config.MODEL_PRESETS["fast"]["num_ctx"])
+
     @unittest.skipIf(os.environ.get("JOBSEARCH_MODEL_PRESET"),
                      "JOBSEARCH_MODEL_PRESET is set in this shell")
     def test_default_is_fast_and_drives_model_and_workers(self):
@@ -367,6 +382,11 @@ class ModelPresets(unittest.TestCase):
         self.assertEqual(config.MODEL, config.MODEL_PRESETS["fast"]["model"])
         self.assertEqual(config.SCORE_WORKERS,
                          config.MODEL_PRESETS["fast"]["score_workers"])
+        # endpoint / context / scoring-timeout globals also derive from the active preset
+        self.assertEqual(config.OLLAMA_URL, config.MODEL_PRESETS["fast"]["ollama_url"])
+        self.assertEqual(config.NUM_CTX, config.MODEL_PRESETS["fast"]["num_ctx"])
+        self.assertEqual(config.SCORE_TIMEOUT_S,
+                         config.MODEL_PRESETS["fast"]["score_timeout_s"])
 
     def test_read_model_preset_flag_env_and_default(self):
         import config
@@ -389,6 +409,36 @@ class ModelPresets(unittest.TestCase):
             else:
                 os.environ.pop("JOBSEARCH_MODEL_PRESET", None)
 
+    def test_selecting_fallback_reroutes_endpoint_ctx_workers_timeout(self):
+        """The whole point of the change: choosing 'fallback' must flip the derived globals to
+        the A4000 instance (:11435), the smaller context, 1 worker and the longer timeout — and
+        'fast' back to the 3090-pool values. Reloads config under a patched argv, then restores
+        it to the default so later tests see the untouched module."""
+        import importlib
+        import config
+        old_argv, old_env = sys.argv[:], os.environ.pop("JOBSEARCH_MODEL_PRESET", None)
+        try:
+            sys.argv = ["prog", "--model-preset", "fallback"]
+            importlib.reload(config)
+            self.assertEqual(config.ACTIVE_MODEL_PRESET, "fallback")
+            self.assertTrue(config.OLLAMA_URL.endswith(":11435/api/generate"))
+            self.assertEqual(config.NUM_CTX, 4096)
+            self.assertEqual(config.SCORE_WORKERS, 1)
+            self.assertEqual(config.SCORE_TIMEOUT_S, 300)
+
+            sys.argv = ["prog", "--model-preset", "fast"]
+            importlib.reload(config)
+            self.assertTrue(config.OLLAMA_URL.endswith(":11434/api/generate"))
+            self.assertEqual(config.NUM_CTX, 8192)
+            self.assertEqual(config.SCORE_WORKERS, 4)
+            self.assertEqual(config.SCORE_TIMEOUT_S, 180)
+        finally:
+            sys.argv = ["prog"]
+            importlib.reload(config)          # restore module to its default (fast) state
+            sys.argv = old_argv
+            if old_env is not None:
+                os.environ["JOBSEARCH_MODEL_PRESET"] = old_env
+
 
 class EnsureModelAvailable(unittest.TestCase):
     """The preflight: passes silently when the active model is served; exits loudly —
@@ -407,6 +457,16 @@ class EnsureModelAvailable(unittest.TestCase):
         with mock.patch.object(core.requests, "get",
                                return_value=self._Resp([core.MODEL, "other:1b"])):
             core.ensure_model_available()          # must not raise
+
+    def test_probes_the_active_presets_endpoint(self):
+        """The preflight must check the endpoint THIS preset uses (so the fallback preset
+        probes its A4000 instance, not the main :11434), derived from OLLAMA_URL."""
+        from unittest import mock
+        with mock.patch.object(core.requests, "get",
+                               return_value=self._Resp([core.MODEL])) as g:
+            core.ensure_model_available()
+        called_url = g.call_args.args[0] if g.call_args.args else g.call_args.kwargs["url"]
+        self.assertEqual(called_url, core.OLLAMA_URL.replace("/api/generate", "/api/tags"))
 
     def test_missing_model_exits_naming_all_presets(self):
         from unittest import mock

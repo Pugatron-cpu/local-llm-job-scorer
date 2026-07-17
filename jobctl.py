@@ -61,6 +61,8 @@ JITTER_SEC = 300
 
 VENV_PYTHON = os.path.join(os.path.dirname(SCRIPT_DIR), "venv", "bin", "python")
 SCRAPE = os.path.join(SCRIPT_DIR, "a_scrape.py")
+# Main (3090-pool) instance. jobctl schedules the DEFAULT "fast" preset, so :11434 is correct
+# here. A fallback-preset schedule would need the A4000 instance's :11435 probe instead.
 OLLAMA_PROBE = "http://localhost:11434/api/tags"
 
 

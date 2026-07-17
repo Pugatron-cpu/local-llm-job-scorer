@@ -73,36 +73,45 @@ def _load_profile(name: str) -> dict:
         return tomllib.load(f)
 
 # --- model / Ollama ------------------------------------------------------------------
-OLLAMA_URL = "http://localhost:11434/api/generate"
-
-# MODEL PRESETS — which Ollama model scores, and with how many parallel workers. Scores are
-# only comparable WITHIN one model, so the preset is stamped on every archive row
-# (scoring_model) and every runs.csv row, and selection is EXPLICIT ONLY: there is NO
-# auto-failover. If the chosen model isn't being served, the run fails loudly at start
-# (core.ensure_model_available) instead of silently switching to a model with a different
-# score scale.
+# MODEL PRESETS — which Ollama model scores, at which ENDPOINT (i.e. which GPU), with how
+# many parallel workers and how much context. Scores are only comparable WITHIN one model,
+# so the preset is stamped on every archive row (scoring_model) and every runs.csv row, and
+# selection is EXPLICIT ONLY: there is NO auto-failover. If the chosen model/endpoint isn't
+# up, the run fails loudly at start (core.ensure_model_available) instead of silently
+# switching to a model with a different score scale.
 #
-#   "fast" (default — exactly the previous behaviour):
+#   "fast" (default — the 3090 NVLink pool, exactly the previous behaviour):
 #     Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
 #     judgment/classification with structured output over mixed Danish/English ads. Gemma 4
 #     is trained on 140+ languages with balanced European representation and strong
 #     instruction following; the 31B dense is the workstation flagship and q8_0 (34GB) fits
-#     the 48GB NVLink pool (2x3090) with room for parallel KV slots at NUM_CTX below.
-#   "fallback":
-#     A 16GB-class model for the RTX A4000, for when the pool is busy with other work.
-#     Scores it produces are on ITS scale, not the 31B's (hence the provenance stamp), so
-#     never mix fallback rows with fast rows when comparing scores.
-#   Alternatives, kept for reference (swap into a preset to try one):
+#     the 48GB NVLink pool (2x3090) served by the MAIN Ollama instance on :11434, with room
+#     for 4 parallel KV slots at num_ctx 8192.
+#   "fallback" (the RTX A4000 — for when the 3090 pool is BUSY or ABSENT):
+#     Gemma 4 12B on the A4000 (16GB), served by a SECOND, A4000-pinned Ollama instance on
+#     :11435. The pipeline does NOT create that instance — it's a host-side systemd unit
+#     (see README "A4000 fallback endpoint"); the preflight fails loudly if it isn't running.
+#     num_ctx 4096 keeps the 12B + KV under 16GB so scoring can share the card with the
+#     always-on embeddings; 1 worker (sequential) matches the instance's OLLAMA_NUM_PARALLEL=1;
+#     the longer score_timeout_s absorbs the slower card. Scores are on ITS scale, not the
+#     31B's (hence the provenance stamp) — never mix fallback rows with fast rows.
+#   Alternatives, kept for reference (swap the model into a preset to try one):
 #     "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
 #                          coding-focused, and the match-quality regression coincided with it.
 #     "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
 #                          14GB less VRAM -> more parallel headroom. Good speed fallback.
 #
-# score_workers: EFFECTIVE concurrency = min(score_workers, the server's OLLAMA_NUM_PARALLEL)
-# — each slot needs its own KV cache; 4 fits the 48GB pool, the A4000 gets 1 (sequential).
+# Per-preset keys: model; ollama_url (which instance/GPU serves it); num_ctx (scoring context
+# window); score_workers (EFFECTIVE concurrency = min(score_workers, the server's
+# OLLAMA_NUM_PARALLEL) — each slot needs its own KV cache); score_timeout_s (per scoring
+# request, separate from the scrape TIMEOUT_S because a smaller/slower GPU is slower per call).
 MODEL_PRESETS = {
-    "fast":     {"model": "gemma4:31b-it-q8_0", "score_workers": 4},
-    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1},
+    "fast":     {"model": "gemma4:31b-it-q8_0", "score_workers": 4,
+                 "ollama_url": "http://localhost:11434/api/generate",
+                 "num_ctx": 8192, "score_timeout_s": 180},
+    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1,
+                 "ollama_url": "http://localhost:11435/api/generate",   # A4000-pinned instance
+                 "num_ctx": 4096, "score_timeout_s": 300},              # smaller ctx + slower card
 }
 
 
@@ -133,10 +142,13 @@ if ACTIVE_MODEL_PRESET not in MODEL_PRESETS:
              + "\n".join(f"    {k:<8} -> {v['model']} ({v['score_workers']} worker(s))"
                          for k, v in MODEL_PRESETS.items())
              + "\nSelect one with `--model-preset <name>` or JOBSEARCH_MODEL_PRESET=<name>.")
-MODEL = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["model"]
+_active         = MODEL_PRESETS[ACTIVE_MODEL_PRESET]
+MODEL           = _active["model"]
+OLLAMA_URL      = _active.get("ollama_url", "http://localhost:11434/api/generate")
 
-NUM_CTX    = 8192                  # room for a full description
-TIMEOUT_S  = 180                  # never let a hung request block the run
+NUM_CTX         = _active.get("num_ctx", 8192)   # scoring context window (per preset)
+TIMEOUT_S       = 180              # per-request cap for SCRAPE / ATS fetches (hung-request guard)
+SCORE_TIMEOUT_S = _active.get("score_timeout_s", TIMEOUT_S)   # per scoring request (per preset)
 
 # --- scrape / scoring knobs ----------------------------------------------------------
 MAX_DAYS_OLD = 8
@@ -179,7 +191,7 @@ REPORT_FRESH_DAYS = 21
 # Stage 3b scoring parallelism — comes from the active MODEL PRESET above (the 48GB pool
 # takes 4 parallel slots, the A4000 fallback runs sequential). Set OLLAMA_NUM_PARALLEL on
 # `ollama serve` to match; effective concurrency is min() of the two. 1 = sequential.
-SCORE_WORKERS = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["score_workers"]
+SCORE_WORKERS = _active["score_workers"]
 
 # Stage 3a fetch parallelism. Sync Playwright is thread-affine, so each worker owns its own
 # headless browser. Keep low (2-3) to stay polite to jobindex.dk. 1 = effectively sequential.
