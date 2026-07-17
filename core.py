@@ -37,6 +37,7 @@ into your archive.
 """
 
 import os
+import sys
 import csv
 import re
 import json
@@ -55,6 +56,8 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
 from config import *   # settings: paths, MODEL, thresholds, ACCEPTED_*, REQUIRE_COMMUTABLE, THEHUB_*, ...
+import extractors                        # deterministic field extraction (post-score merge)
+from extractors import parse_deadline    # shared deadline parser (regex lives in extractors.py)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -877,34 +880,12 @@ def _detect_lang(text: str):
         return None
 
 
-_DEADLINE_RE = re.compile(
-    r"(?:ans[øo]gningsfrist|frist|deadline|ans[øo]g\s+senest|s[øo]g\s+senest|senest\s+den"
-    r"|apply\s+(?:by|before|no\s+later\s+than)|closing\s+date)"
-    r"[:\s]*(?:den\s+)?"
-    r"(\d{1,2})[.\s/-]\s*(\d{1,2}|\w+)[.\s/-]\s*(\d{2,4})",
-    re.IGNORECASE,
-)
-_MONTHS = {m: i for i, m in enumerate(
-    ["januar", "februar", "marts", "april", "maj", "juni", "juli", "august",
-     "september", "oktober", "november", "december"], start=1)}
-
 def deadline_passed(text: str) -> bool:
-    """Best-effort: returns True only if we confidently parse a past deadline."""
-    m = _DEADLINE_RE.search(text)
-    if not m:
-        return False
-    day, mon, year = m.groups()
-    try:
-        day = int(day)
-        month = int(mon) if mon.isdigit() else _MONTHS.get(mon.lower())
-        if not month:
-            return False
-        year = int(year)
-        if year < 100:
-            year += 2000
-        return datetime(year, month, day).date() < datetime.now().date()
-    except (ValueError, TypeError):
-        return False
+    """Best-effort: returns True only if we confidently parse a past deadline.
+    The regex + month parsing moved to extractors.parse_deadline, shared with
+    extract_deadline (the cosmetic field), so the two can never disagree."""
+    d = parse_deadline(text)
+    return d is not None and d < datetime.now().date()
 
 # ---------------------------------------------------------------------------
 # STAGE 3b: LLM SCORING (structured output)
@@ -1008,6 +989,33 @@ Description:
 
 Respond with ONLY a JSON object, no markdown fences, no other text, exactly like:
 {{"score": 0-100, "track": "A"|"B"|"none", "is_tech_company": true|false, "employment_type": "student"|"part_time"|"full_time"|"internship"|"unknown", "work_mode": "onsite"|"hybrid"|"remote"|"unknown", "location": "city"|"", "commute_ok": true|false, "danish_level": "none"|"preferred"|"required", "deadline": "YYYY-MM-DD"|"", "reasoning": "one sentence", "matched_skills": ["skill", "skill"]}}"""
+
+
+def ensure_model_available():
+    """Preflight, called at run start BEFORE any scraping: confirm Ollama is up and the
+    ACTIVE preset's model is actually served. Fails LOUDLY (sys.exit) naming every preset —
+    deliberately no auto-failover, because each model scores on its own scale, and silently
+    switching models would silently make new rows incomparable to the archive."""
+    presets = "\n".join(
+        f"    {k:<8} -> {v['model']} ({v['score_workers']} worker(s))"
+        + ("   <- selected" if k == ACTIVE_MODEL_PRESET else "")
+        for k, v in MODEL_PRESETS.items())
+    how = ("  Select one: python a_scrape.py --model-preset <name>   "
+           "(or JOBSEARCH_MODEL_PRESET=<name>)")
+    tags_url = OLLAMA_URL.replace("/api/generate", "/api/tags")
+    try:
+        r = requests.get(tags_url, timeout=10)
+        r.raise_for_status()
+        served = {str(m.get("name", "")) for m in r.json().get("models", [])}
+    except Exception as e:
+        sys.exit(f"Ollama is unreachable at {tags_url} ({str(e)[:120]}).\n"
+                 f"  Start it (`ollama serve`), then pick a preset:\n{presets}\n{how}")
+    if MODEL not in served:
+        sys.exit(f"Model '{MODEL}' (preset '{ACTIVE_MODEL_PRESET}') is not served by Ollama.\n"
+                 f"  Installed models: {', '.join(sorted(served)) or '(none)'}\n"
+                 f"  Pull it (`ollama pull {MODEL}`) or pick a preset that is installed:\n"
+                 f"{presets}\n{how}")
+    log.info(f"Model preset: {ACTIVE_MODEL_PRESET} -> {MODEL} ({SCORE_WORKERS} score worker(s))")
 
 
 def score_job(job: dict, description: str, model: str | None = None) -> dict:
@@ -1125,6 +1133,61 @@ def _coerce_danish_level(d: dict) -> str:
     return "none"
 
 
+# ---------------------------------------------------------------------------
+# POST-SCORE DETERMINISTIC MERGE (extractors.py)
+# ---------------------------------------------------------------------------
+
+_DANISH_ORDER = {"none": 0, "preferred": 1, "required": 2}
+
+
+def merge_extracted_fields(job: dict, desc: str) -> dict:
+    """OVERWRITE the LLM's MECHANICAL fields with confident extractor values; where an
+    extractor returned its sentinel ("", "unknown", None), the LLM's value stands. The
+    judgment fields (score, track, reasoning, is_tech_company) are never touched, so the
+    score scale stays identical to the archive's. FILLS fields only — it never drops, gates
+    or filters a row; the deadline_passed drop upstream remains the only deterministic drop.
+
+    Called AFTER job.update(score_job(...)), so job['location'] holds the LLM's answer by
+    then. The teaser's own location (The Hub/ATS carry a real one; Jobindex says "N/A") is
+    preserved by the caller under '_source_location', which extract_location prefers.
+
+    danish_level is a FLOOR, not an overwrite: max-merge on none < preferred < required,
+    mirroring the ad_language->preferred lift in _score_worker. An explicit "dansk er et
+    krav" in the ad can only RAISE the LLM's grade, never lower it.
+
+    Returns {"det": n, "llm": n, "danish_lift": 0|1} — how many of the six mechanical
+    fields were deterministically set vs left to the LLM, for the funnel log/runs.csv."""
+    stats = {"det": 0, "llm": 0, "danish_lift": 0}
+
+    def _merge(field, value, sentinel):
+        if value != sentinel and value is not None:
+            job[field] = value
+            stats["det"] += 1
+        else:
+            stats["llm"] += 1
+
+    src_loc = job.pop("_source_location", "")
+    _merge("employment_type",
+           extractors.extract_employment_type(job.get("title", ""), desc), "unknown")
+    _merge("work_mode", extractors.extract_work_mode(desc), "unknown")
+    _merge("location",
+           extractors.extract_location({"title": job.get("title", ""),
+                                        "location": src_loc}, desc), "")
+    # Commute is a pure geography lookup on the best-known location string (the merged one:
+    # source-provided or extracted if confident, else the LLM's own answer).
+    _merge("commute_ok", extractors.commute_ok(job.get("location", "")), None)
+    _merge("deadline", extractors.extract_deadline(desc), "")
+    _merge("matched_skills",
+           extractors.extract_matched_skills(desc, SKILLS_VOCAB), None)
+
+    floor = extractors.danish_level_floor(desc)
+    if floor and (_DANISH_ORDER.get(floor, 0)
+                  > _DANISH_ORDER.get(str(job.get("danish_level", "none")).lower(), 0)):
+        job["danish_level"] = floor
+        stats["danish_lift"] = 1
+    return stats
+
+
 def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
     """Generic schema-constrained Ollama call. Returns a parsed dict, or None on failure.
     Same transport as score_job (same MODEL, think:False, low temperature) but task-agnostic,
@@ -1167,12 +1230,21 @@ def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
 ARCHIVE_FIELDS = ["scraped_date", "title", "company", "location", "published_date",
                   "url", "track", "score", "employment_type", "work_mode", "commute_ok",
                   "danish_level", "ad_language", "is_tech_company", "deadline",
-                  "matched_skills", "source", "reasoning"]
+                  "matched_skills", "source", "reasoning", "scoring_model",
+                  "stated_salary", "stated_experience_years"]
 # ad_language: the ad's detected WRITING language ("da"/"en"/"sv"/"no"/"" = undetected),
 # set deterministically by _detect_lang at scoring time — separate from danish_level, which
 # is the LLM's judgement of how much Danish the ROLE requires. Rows scored before this
 # column existed have it blank (migrate_archive_if_needed leaves new columns empty);
 # `python a_scrape.py --rescore` refreshes still-open shortlist rows with blank flags.
+# scoring_model: PROVENANCE — the exact model string that scored this row. Scores are only
+# comparable within one model, so with presets (config.MODEL_PRESETS) every row records
+# which scale it is on. Rows from before this column have it blank; those were scored by
+# whatever MODEL was current at their scraped_date (see git history of config.py).
+# stated_salary / stated_experience_years: ANALYTICS-ONLY captures (extractors.py) — the
+# raw matched kr/DKK amount and years-of-experience phrase from the scored description,
+# exactly as the ad wrote them (no normalisation), blank when absent. NOTHING in the
+# pipeline reads them: not scoring, not the shortlist filters, not the report.
 
 def load_seen_urls(path: str) -> set:
     """Return the set of CANONICAL URLs already in the archive, so a role already scored
@@ -1284,10 +1356,17 @@ class ArchiveWriter:
 RUNS_FIELDS = ["run_ts", "duration_s", "scrape_s", "fetch_gate_s", "score_s",
                "teasers", "prefiltered", "danish_early", "danish_body",
                "deadline_dropped", "fetched", "snippet_fallback", "scored",
-               "errors", "matches"]
+               "errors", "matches", "fields_det", "fields_llm",
+               "model_preset", "model"]
 # snippet_fallback: roles whose page fetch failed (after a retry) and were scored on the
 # teaser only. Watch this column: a spike means Jobindex/ATS fetching broke, which silently
 # degrades BOTH match quality and danish_level accuracy.
+# fields_det / fields_llm: of the six mechanical fields per scored row (employment_type,
+# work_mode, location, commute_ok, deadline, matched_skills), how many the deterministic
+# extractors set vs left to the LLM's answer (see merge_extracted_fields). Old rows have
+# them blank (migrate_csv_if_needed).
+# model_preset / model: which config.MODEL_PRESETS entry (and exact model string) scored
+# this run — the run-level view of the per-row scoring_model provenance column.
 
 def _log_run(run_start, total_s, timings, funnel):
     """Append one row per run to runs.csv: when it ran, how long each stage took, and the
@@ -1533,6 +1612,7 @@ def _rescore_open(force: bool, limit: int):
     """Shared worker for the two re-score modes. `force=False` only touches rows with missing
     Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
     label = "--rescore-all" if force else "--rescore"
+    ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
     today = datetime.now().strftime("%Y-%m-%d")
     today_d = datetime.now().date()
     stale = []
@@ -1575,11 +1655,19 @@ def _rescore_open(force: bool, limit: int):
                 log.warning(f"  {label}: fetch failed, skipping {job['url']}")
                 continue
             job["source"] = "full"
+            job["_source_location"] = job.get("location", "")   # see _score_worker
             res = score_job(job, desc)
             if res["reasoning"] == "scoring error":
                 log.warning(f"  {label}: scoring failed, skipping {job['title']!r}")
                 continue
             job.update(res)
+            # Same post-score deterministic merge as the main scoring path, so a re-scored
+            # row carries the same extractor-owned fields as a freshly scored one.
+            merge_extracted_fields(job, desc)
+            job["scoring_model"] = MODEL      # provenance: which scale this score is on
+            # Analytics-only captures (never read by the pipeline) — same as _score_worker.
+            job["stated_salary"] = extractors.extract_stated_salary(desc)
+            job["stated_experience_years"] = extractors.extract_stated_experience(desc)
             job["ad_language"] = _detect_lang(desc[:2000]) or ""
             if job["ad_language"] == "da" and job.get("danish_level") == "none":
                 job["danish_level"] = "preferred"
@@ -1595,7 +1683,13 @@ def _rescore_open(force: bool, limit: int):
 # ---------------------------------------------------------------------------
 
 RAW_TEASER_FIELDS = ["scrape_ts", "source_site", "title", "company", "location",
-                     "published_date", "url", "canonical_url", "snippet", "passed_prefilter"]
+                     "published_date", "url", "canonical_url", "snippet", "passed_prefilter",
+                     "stated_salary", "stated_experience_years"]
+# stated_salary / stated_experience_years: ANALYTICS-ONLY captures (extractors.py) — the raw
+# matched kr/DKK amount and "X års erfaring"/"X+ years" phrase as the ad wrote them, no
+# normalisation, blank when absent. NOTHING in the pipeline reads them (no scoring, no
+# filtering); they exist so market questions ("do student ads state pay?", "how much
+# experience does the market ask for?") can be answered from data that can't be backfilled.
 
 
 def _log_raw_teasers(rows: list, path: str):
@@ -1609,7 +1703,8 @@ def _log_raw_teasers(rows: list, path: str):
     if not rows:
         return
     try:
-        new = not os.path.isfile(path)
+        migrate_csv_if_needed(path, RAW_TEASER_FIELDS)   # columns added? realign first —
+        new = not os.path.isfile(path)                   # a bare append would misalign rows
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=RAW_TEASER_FIELDS)
@@ -1634,6 +1729,7 @@ def main():
     log.info(f"Active profile: {ACTIVE_PROFILE} "
              + ("(owner; persisting to the main data dirs)" if IS_OWNER
                 else f"(sandboxed -> {BASE_DIR}; nothing is written to your own data)"))
+    ensure_model_available()   # fail loudly NOW, not after a 20-minute scrape
     cutoff = datetime.now().date() - timedelta(days=MAX_DAYS_OLD)
     seen = load_seen_urls(MASTER_ARCHIVE)            # CANONICAL urls already in the archive
     seen_role_keys = load_seen_role_keys(MASTER_ARCHIVE)  # role fingerprints already scored
@@ -1673,8 +1769,16 @@ def main():
         # drop as duplicates. A still-live ad re-seen on 9 consecutive runs writes 9 rows — that
         # repetition IS the signal (days-on-market). Dedup happens at analysis time, not here.
         if LOG_RAW_TEASERS:
+            # stated_salary / stated_experience_years: analytics-only regex captures over
+            # whatever text the teaser carries (title + snippet + inline body when the
+            # source supplied one). Never read by scoring or filtering.
+            raw_text = f"{job.get('title', '')} {job.get('snippet', '')} " \
+                       f"{job.get('_description', '')}"
             raw_seen.append({**job, "scrape_ts": scrape_ts, "canonical_url": cu,
-                             "passed_prefilter": _keep_candidate(job)})
+                             "passed_prefilter": _keep_candidate(job),
+                             "stated_salary": extractors.extract_stated_salary(raw_text),
+                             "stated_experience_years":
+                                 extractors.extract_stated_experience(raw_text)})
 
         if not cu:
             continue
@@ -1791,8 +1895,20 @@ def main():
     # Each row is still written + flushed immediately, so an interruption keeps finished work.
     def _score_worker(job):
         desc = job.pop("_description")
+        # The teaser's own location, saved BEFORE the LLM result lands: job.update(res)
+        # overwrites job['location'] with the model's answer, and extract_location prefers
+        # the source-provided one (The Hub/ATS carry a real locality; Jobindex says "N/A").
+        job["_source_location"] = job.get("location", "")
         res = score_job(job, desc)
         job.update(res)
+        # Post-score deterministic merge: confident extractor values overwrite the LLM's
+        # mechanical fields; sentinels leave them alone. Judgment fields untouched.
+        if res.get("reasoning") != "scoring error":
+            job["_extract_stats"] = merge_extracted_fields(job, desc)
+        job["scoring_model"] = MODEL          # provenance: which scale this score is on
+        # Analytics-only captures from the scored description (never read by the pipeline).
+        job["stated_salary"] = extractors.extract_stated_salary(desc)
+        job["stated_experience_years"] = extractors.extract_stated_experience(desc)
         # Deterministic ad WRITING language (independent of the LLM's danish_level, which is
         # the ROLE's requirement). Feeds the EXCLUDE_DANISH_ADS view filter + report flag.
         job["ad_language"] = _detect_lang(desc[:2000]) or ""
@@ -1812,6 +1928,7 @@ def main():
 
     matches = []
     errors = 0
+    fields_det = fields_llm = danish_lifts = 0   # extractor-vs-LLM field counts, for the log
     with ArchiveWriter(MASTER_ARCHIVE) as archive:
         with ThreadPoolExecutor(max_workers=max(1, SCORE_WORKERS)) as pool:
             futures = [pool.submit(_score_worker, j) for j in survivors]
@@ -1825,6 +1942,11 @@ def main():
                 if job["reasoning"] == "scoring error":
                     errors += 1
                     continue  # don't archive failures -> URLs stay unseen and get retried
+                stats = job.pop("_extract_stats", None)
+                if stats:
+                    fields_det += stats["det"]
+                    fields_llm += stats["llm"]
+                    danish_lifts += stats["danish_lift"]
                 archive.write(job)
                 # Console preview uses the SAME predicate as the report (score, type, commute,
                 # Danish, track-B bar, still-open) via shortlist_reject_reason, so what prints
@@ -1835,6 +1957,9 @@ def main():
                     matches.append(job)
         log.info(f"Stage 3b: scored + archived {archive.count} jobs "
                  f"({len(matches)} newly qualify; {errors} errors; {SCORE_WORKERS} workers)")
+        log.info(f"Extractors: {fields_det} mechanical field(s) set deterministically, "
+                 f"{fields_llm} left to the LLM; danish_level floor lifted "
+                 f"{danish_lifts} row(s)")
     t_after_score = _mark("score", t_after_fetch)
 
     # Authoritative shortlist size = the whole archive re-filtered (this run's new hits PLUS
@@ -1849,6 +1974,8 @@ def main():
         "deadline_dropped": drop["deadline"], "fetched": len(to_fetch),
         "snippet_fallback": fallback,
         "scored": archive.count, "errors": errors, "matches": shortlist_n,
+        "fields_det": fields_det, "fields_llm": fields_llm,
+        "model_preset": ACTIVE_MODEL_PRESET, "model": MODEL,
     })
     log.info(f"Done in {total_s:.1f}s "
              f"(scrape {timings.get('scrape', 0):.1f}s, "

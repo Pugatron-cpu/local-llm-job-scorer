@@ -74,17 +74,67 @@ def _load_profile(name: str) -> dict:
 
 # --- model / Ollama ------------------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434/api/generate"
-# Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
-# judgment/classification with structured output over mixed Danish/English ads. Gemma 4 is
-# trained on 140+ languages with balanced European representation and strong instruction
-# following; the 31B dense is the workstation flagship and q8_0 (34GB) fits the 48GB pool
-# with room for parallel KV slots at NUM_CTX below.
-# Alternatives, kept for reference (set MODEL to one of these to try it):
-#   "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
-#                        coding-focused, and the match-quality regression coincided with it.
-#   "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
-#                        14GB less VRAM -> more parallel headroom. Good speed fallback.
-MODEL      = "gemma4:31b-it-q8_0"
+
+# MODEL PRESETS — which Ollama model scores, and with how many parallel workers. Scores are
+# only comparable WITHIN one model, so the preset is stamped on every archive row
+# (scoring_model) and every runs.csv row, and selection is EXPLICIT ONLY: there is NO
+# auto-failover. If the chosen model isn't being served, the run fails loudly at start
+# (core.ensure_model_available) instead of silently switching to a model with a different
+# score scale.
+#
+#   "fast" (default — exactly the previous behaviour):
+#     Gemma 4 31B (dense, Apache 2.0, 2026-04): picked for THIS task's actual profile —
+#     judgment/classification with structured output over mixed Danish/English ads. Gemma 4
+#     is trained on 140+ languages with balanced European representation and strong
+#     instruction following; the 31B dense is the workstation flagship and q8_0 (34GB) fits
+#     the 48GB NVLink pool (2x3090) with room for parallel KV slots at NUM_CTX below.
+#   "fallback":
+#     A 16GB-class model for the RTX A4000, for when the pool is busy with other work.
+#     Scores it produces are on ITS scale, not the 31B's (hence the provenance stamp), so
+#     never mix fallback rows with fast rows when comparing scores.
+#   Alternatives, kept for reference (swap into a preset to try one):
+#     "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
+#                          coding-focused, and the match-quality regression coincided with it.
+#     "gemma4:31b"        (20GB QAT) — same model, quantization-aware 4-bit: near-q8 quality,
+#                          14GB less VRAM -> more parallel headroom. Good speed fallback.
+#
+# score_workers: EFFECTIVE concurrency = min(score_workers, the server's OLLAMA_NUM_PARALLEL)
+# — each slot needs its own KV cache; 4 fits the 48GB pool, the A4000 gets 1 (sequential).
+MODEL_PRESETS = {
+    "fast":     {"model": "gemma4:31b-it-q8_0", "score_workers": 4},
+    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1},
+}
+
+
+def _read_model_preset() -> str:
+    """Peek at `--model-preset <name>` (or the JOBSEARCH_MODEL_PRESET env var) and REMOVE
+    the flag + value from sys.argv, same drill as _read_profile_flag: every tool does
+    `from config import *`, so the model must be resolved before anything imports it.
+    Defaults to "fast" — exactly today's behaviour when neither flag nor env var is set.
+
+    A bare `--model-preset` with no value (or one swallowed by the next flag) exits loudly
+    rather than silently falling back to "fast": a typo'd flag must not quietly run the
+    wrong model onto a differently-scaled archive."""
+    name = os.environ.get("JOBSEARCH_MODEL_PRESET", "").strip()
+    if "--model-preset" in sys.argv:
+        i = sys.argv.index("--model-preset")
+        val = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        if not val or val.startswith("-"):
+            sys.exit("`--model-preset` needs a preset name (e.g. `--model-preset fast`). "
+                     "Available: " + ", ".join(MODEL_PRESETS))
+        del sys.argv[i:i + 2]
+        name = val.strip()
+    return name.lower() or "fast"
+
+
+ACTIVE_MODEL_PRESET = _read_model_preset()
+if ACTIVE_MODEL_PRESET not in MODEL_PRESETS:
+    sys.exit(f"Unknown model preset '{ACTIVE_MODEL_PRESET}'. Available presets:\n"
+             + "\n".join(f"    {k:<8} -> {v['model']} ({v['score_workers']} worker(s))"
+                         for k, v in MODEL_PRESETS.items())
+             + "\nSelect one with `--model-preset <name>` or JOBSEARCH_MODEL_PRESET=<name>.")
+MODEL = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["model"]
+
 NUM_CTX    = 8192                  # room for a full description
 TIMEOUT_S  = 180                  # never let a hung request block the run
 
@@ -105,15 +155,31 @@ ACCEPTED_EMPLOYMENT_TYPES = {"student", "part_time", "internship", "unknown"}
 # filter entirely (e.g. if you can relocate). To include Sweden, edit the prompt in core.py.
 REQUIRE_COMMUTABLE = True
 
+# Commutable areas for the DETERMINISTIC commute check (extractors.commute_ok): a stated
+# location matching one of these (lowercase substring) is confidently commutable; a known
+# Danish city matching none of them is confidently NOT; anything else is left to the LLM.
+# This replaces asking the LLM to do Danish geography, which it gets wrong. "remote" is in
+# the set because a remote role is reachable by definition. The default is the OWNER's
+# Copenhagen rule (the same ~45-min-from-Ørestad circle LOCATION_ANCHOR describes) — a
+# profile anchored ANYWHERE ELSE must set its own commutable_areas list in its toml, or
+# set it to [] to switch the deterministic check off (the LLM's judgment then stands).
+COMMUTABLE_AREAS = {
+    "copenhagen", "københavn", "kbh", "frederiksberg", "lyngby", "glostrup", "ballerup",
+    "hellerup", "roskilde", "ørestad", "orestad", "herlev", "gentofte", "gladsaxe",
+    "søborg", "valby", "brøndby", "hvidovre", "rødovre", "albertslund", "taastrup",
+    "ishøj", "kastrup",
+    "remote",
+}
+
 # The report shows only roles likely STILL OPEN:
 #   stated deadline passed -> dropped; future deadline -> kept until then (trusted over age);
 #   no deadline -> kept until REPORT_FRESH_DAYS after first seen, then assumed filled.
 REPORT_FRESH_DAYS = 21
 
-# Stage 3b scoring parallelism. EFFECTIVE concurrency = min(SCORE_WORKERS, the server's
-# OLLAMA_NUM_PARALLEL) -- set OLLAMA_NUM_PARALLEL on `ollama serve` (each slot needs its own
-# KV cache; start 2-4 for a 27B on the 48 GB pool). 1 = sequential.
-SCORE_WORKERS = 4
+# Stage 3b scoring parallelism — comes from the active MODEL PRESET above (the 48GB pool
+# takes 4 parallel slots, the A4000 fallback runs sequential). Set OLLAMA_NUM_PARALLEL on
+# `ollama serve` to match; effective concurrency is min() of the two. 1 = sequential.
+SCORE_WORKERS = MODEL_PRESETS[ACTIVE_MODEL_PRESET]["score_workers"]
 
 # Stage 3a fetch parallelism. Sync Playwright is thread-affine, so each worker owns its own
 # headless browser. Keep low (2-3) to stay polite to jobindex.dk. 1 = effectively sequential.
@@ -455,7 +521,7 @@ if _prof.get("target_sector"):
 # Shortlist VIEW filters — these decide what reaches the report, not what gets scored.
 # Both were global and tech/student-shaped: a full-time candidate would have had every role she
 # wants filtered out of her own shortlist by ACCEPTED_EMPLOYMENT_TYPES={"student", ...}.
-if _prof.get("accepted_employment_types"):
+if "accepted_employment_types" in _prof:
     ACCEPTED_EMPLOYMENT_TYPES = {str(t).lower() for t in _prof["accepted_employment_types"]}
 if _prof.get("score_threshold"):
     SCORE_THRESHOLD = int(_prof["score_threshold"])
@@ -468,26 +534,42 @@ if _prof.get("score_threshold"):
 #   include_terms          -> replaces the whole INCLUDE list (TECH + BRIDGE together)
 #   tech_terms/bridge_terms-> replace just that half (bridge_terms = [] disables Track B)
 #   exclude_terms          -> replaces the title-only veto list
-if _prof.get("tech_terms"):
+if "tech_terms" in _prof:
     TECH_TERMS = [str(t).lower() for t in _prof["tech_terms"]]
 if "bridge_terms" in _prof:              # may legitimately be [] -> no Track B
     BRIDGE_TERMS = [str(t).lower() for t in _prof["bridge_terms"]]
 INCLUDE_TERMS = TECH_TERMS + BRIDGE_TERMS          # recomputed: the halves may have changed
-if _prof.get("include_terms"):           # wholesale override wins over the halves
+if "include_terms" in _prof:           # wholesale override wins over the halves
     INCLUDE_TERMS = [str(t).lower() for t in _prof["include_terms"]]
 if "exclude_terms" in _prof:
     EXCLUDE_TERMS = [str(t).lower() for t in _prof["exclude_terms"]]
 
-if _prof.get("queries"):
+# `in _prof`, NOT _prof.get(): an EMPTY LIST is falsy in Python, so `thehub_queries = []` — a
+# profile deliberately switching a source off — was silently ignored, and the profile inherited
+# the OWNER's queries instead. That is how a treasury profile ended up scraping a Nordic tech
+# startup board with someone else's keywords. An empty list is a decision; honour it.
+if "queries" in _prof:
     TARGET_QUERIES = [str(q) for q in _prof["queries"]]
-if _prof.get("thehub_queries"):
+if "thehub_queries" in _prof:
     THEHUB_QUERIES = [str(q) for q in _prof["thehub_queries"]]
+    THEHUB_ENABLED = THEHUB_ENABLED and bool(THEHUB_QUERIES)   # no queries -> source is off
 if "ats_companies" in _prof:            # per-person target-employer watchlist (may be [])
     ATS_COMPANIES = [str(x) for x in _prof["ats_companies"]]
-if _prof.get("excluded_companies"):
+if "excluded_companies" in _prof:
     EXCLUDED_COMPANIES = [str(x).lower() for x in _prof["excluded_companies"]]
 if "require_commutable" in _prof:
     REQUIRE_COMMUTABLE = bool(_prof["require_commutable"])
+# commutable_areas: the deterministic commute check's geography (see COMMUTABLE_AREAS
+# above). The default is the owner's Copenhagen circle, so a profile anchored anywhere else
+# MUST bring its own list — or set [] to disable the deterministic check entirely (the
+# LLM's commute_ok judgment, driven by the profile's location_anchor, then stands).
+if "commutable_areas" in _prof:
+    COMMUTABLE_AREAS = {str(a).lower() for a in _prof["commutable_areas"]}
+
+# skills_vocab: the skill names extract_matched_skills looks for in ad text (deterministic
+# whole-word matching, replacing the LLM's free-associated matched_skills list). Optional:
+# no list (or an empty one) -> the extractor stays silent and the LLM's list stands.
+SKILLS_VOCAB = [str(s) for s in (_prof.get("skills_vocab") or [])]
 # danish_ok = true: this person is comfortable in Danish, so DON'T hide Danish-required
 # roles from their shortlist. Maps to the EXCLUDE_DANISH_REQUIRED view filter.
 if "danish_ok" in _prof:
