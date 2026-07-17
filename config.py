@@ -89,7 +89,7 @@ def _load_profile(name: str) -> dict:
 #     for 4 parallel KV slots at num_ctx 8192.
 #   "fallback" (the RTX A4000 — for when the 3090 pool is BUSY or ABSENT):
 #     Gemma 4 12B on the A4000 (16GB), served by a SECOND, A4000-pinned Ollama instance on
-#     :11435. The pipeline does NOT create that instance — it's a host-side systemd unit
+#     :11436. The pipeline does NOT create that instance — it's a host-side systemd unit
 #     (see README "A4000 fallback endpoint"); the preflight fails loudly if it isn't running.
 #     num_ctx 4096 keeps the 12B + KV under 16GB so scoring can share the card with the
 #     always-on embeddings; 1 worker (sequential) matches the instance's OLLAMA_NUM_PARALLEL=1;
@@ -110,7 +110,7 @@ MODEL_PRESETS = {
                  "ollama_url": "http://localhost:11434/api/generate",
                  "num_ctx": 8192, "score_timeout_s": 180},
     "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1,
-                 "ollama_url": "http://localhost:11435/api/generate",   # A4000-pinned instance
+                 "ollama_url": "http://localhost:11436/api/generate",   # A4000-pinned instance
                  "num_ctx": 4096, "score_timeout_s": 300},              # smaller ctx + slower card
 }
 

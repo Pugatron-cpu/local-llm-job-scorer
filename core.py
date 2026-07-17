@@ -1010,7 +1010,7 @@ def ensure_model_available():
     except Exception as e:
         sys.exit(f"Ollama is unreachable at {tags_url} ({str(e)[:120]}).\n"
                  f"  Start the instance that serves this preset (the fallback preset needs its\n"
-                 f"  own A4000 instance on :11435 — see README 'A4000 fallback endpoint'), then\n"
+                 f"  own A4000 instance on :11436 — see README 'A4000 fallback endpoint'), then\n"
                  f"  pick a preset:\n{presets}\n{how}")
     if MODEL not in served:
         sys.exit(f"Model '{MODEL}' (preset '{ACTIVE_MODEL_PRESET}') is not served by Ollama.\n"

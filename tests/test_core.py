@@ -368,9 +368,9 @@ class ModelPresets(unittest.TestCase):
             self.assertTrue(spec["ollama_url"].startswith("http"))
             self.assertGreaterEqual(spec["num_ctx"], 1024)
             self.assertGreaterEqual(spec["score_timeout_s"], 1)
-        # fallback = the separate A4000 instance (:11435), smaller ctx than the 3090 pool.
+        # fallback = the separate A4000 instance (:11436), smaller ctx than the 3090 pool.
         self.assertIn(":11434", config.MODEL_PRESETS["fast"]["ollama_url"])
-        self.assertIn(":11435", config.MODEL_PRESETS["fallback"]["ollama_url"])
+        self.assertIn(":11436", config.MODEL_PRESETS["fallback"]["ollama_url"])
         self.assertLess(config.MODEL_PRESETS["fallback"]["num_ctx"],
                         config.MODEL_PRESETS["fast"]["num_ctx"])
 
@@ -411,7 +411,7 @@ class ModelPresets(unittest.TestCase):
 
     def test_selecting_fallback_reroutes_endpoint_ctx_workers_timeout(self):
         """The whole point of the change: choosing 'fallback' must flip the derived globals to
-        the A4000 instance (:11435), the smaller context, 1 worker and the longer timeout — and
+        the A4000 instance (:11436), the smaller context, 1 worker and the longer timeout — and
         'fast' back to the 3090-pool values. Reloads config under a patched argv, then restores
         it to the default so later tests see the untouched module."""
         import importlib
@@ -421,7 +421,7 @@ class ModelPresets(unittest.TestCase):
             sys.argv = ["prog", "--model-preset", "fallback"]
             importlib.reload(config)
             self.assertEqual(config.ACTIVE_MODEL_PRESET, "fallback")
-            self.assertTrue(config.OLLAMA_URL.endswith(":11435/api/generate"))
+            self.assertTrue(config.OLLAMA_URL.endswith(":11436/api/generate"))
             self.assertEqual(config.NUM_CTX, 4096)
             self.assertEqual(config.SCORE_WORKERS, 1)
             self.assertEqual(config.SCORE_TIMEOUT_S, 300)
