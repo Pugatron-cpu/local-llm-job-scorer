@@ -90,8 +90,8 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 #     the 48GB NVLink pool (2x3090) with room for parallel KV slots at NUM_CTX below.
 #   "fallback":
 #     A 16GB-class model for the RTX A4000, for when the pool is busy with other work.
-#     PLACEHOLDER — verify the exact tag against `ollama list` (and pull it) before first
-#     use; scores it produces are on ITS scale, not the 31B's (hence the provenance stamp).
+#     Scores it produces are on ITS scale, not the 31B's (hence the provenance stamp), so
+#     never mix fallback rows with fast rows when comparing scores.
 #   Alternatives, kept for reference (swap into a preset to try one):
 #     "qwen3.6:27b-q8_0"  (30GB) — the previous model; excellent, but its 3.6 gains are
 #                          coding-focused, and the match-quality regression coincided with it.
@@ -102,7 +102,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 # — each slot needs its own KV cache; 4 fits the 48GB pool, the A4000 gets 1 (sequential).
 MODEL_PRESETS = {
     "fast":     {"model": "gemma4:31b-it-q8_0", "score_workers": 4},
-    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1},   # PLACEHOLDER tag
+    "fallback": {"model": "gemma4:12b-it-q8_0", "score_workers": 1},
 }
 
 
@@ -110,11 +110,18 @@ def _read_model_preset() -> str:
     """Peek at `--model-preset <name>` (or the JOBSEARCH_MODEL_PRESET env var) and REMOVE
     the flag + value from sys.argv, same drill as _read_profile_flag: every tool does
     `from config import *`, so the model must be resolved before anything imports it.
-    Defaults to "fast" — exactly today's behaviour when neither flag nor env var is set."""
+    Defaults to "fast" — exactly today's behaviour when neither flag nor env var is set.
+
+    A bare `--model-preset` with no value (or one swallowed by the next flag) exits loudly
+    rather than silently falling back to "fast": a typo'd flag must not quietly run the
+    wrong model onto a differently-scaled archive."""
     name = os.environ.get("JOBSEARCH_MODEL_PRESET", "").strip()
     if "--model-preset" in sys.argv:
         i = sys.argv.index("--model-preset")
         val = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        if not val or val.startswith("-"):
+            sys.exit("`--model-preset` needs a preset name (e.g. `--model-preset fast`). "
+                     "Available: " + ", ".join(MODEL_PRESETS))
         del sys.argv[i:i + 2]
         name = val.strip()
     return name.lower() or "fast"

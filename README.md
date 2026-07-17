@@ -235,9 +235,8 @@ Two profile keys feed this layer (both optional, see `_template.toml`):
 Scores are only comparable within one model, so the model is managed explicitly:
 
 - `config.MODEL_PRESETS` defines `fast` (the 31B on the 48GB NVLink pool, 4 score workers —
-  the default, and exactly the historical behaviour) and `fallback` (a 16GB-class model for
-  the A4000, 1 worker; the tag is a placeholder — verify against `ollama list` before first
-  use).
+  the default, and exactly the historical behaviour) and `fallback` (`gemma4:12b-it-q8_0`, a
+  16GB-class model for the A4000, 1 worker, for when the pool is busy).
 - Select with `--model-preset <name>` or `JOBSEARCH_MODEL_PRESET=<name>`. Selection is
   **explicit only — there is no auto-failover**: every run preflights Ollama at start
   (`core.ensure_model_available`) and exits loudly, naming both presets, if the chosen
