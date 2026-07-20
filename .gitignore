@@ -1,4 +1,5 @@
 job_market_data/
+job_market_data.bak-*/
 applications/
 __pycache__/
 *.pyc
