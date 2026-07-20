@@ -261,6 +261,18 @@ shares the existing model store, so the 12B is already present (no re-pull).
 Ollama container. If you change the port, change it in both `MODEL_PRESETS["fallback"]["ollama_url"]`
 and the unit's `OLLAMA_HOST` below.)
 
+Pinning this instance to *only* the A4000 needs two settings, and both matter (learned the
+hard way on Ollama 0.32):
+
+1. **Pin CUDA by GPU UUID, not by numeric index.** Ollama does not order devices by PCI bus,
+   so `CUDA_VISIBLE_DEVICES=1` put the model on a 3090. A UUID is unambiguous. Get it with:
+   `nvidia-smi --query-gpu=index,name,uuid --format=csv` (A4000 UUID on this host below).
+2. **Disable the Vulkan backend (`OLLAMA_VULKAN=0`).** Ollama 0.32 enables Vulkan by default,
+   and Vulkan enumerates GPUs *independently* of `CUDA_VISIBLE_DEVICES` — it re-discovered the
+   two 3090s and the scheduler preferred them (more free VRAM), so the CUDA pin alone was not
+   enough. With Vulkan off, only the CUDA-pinned A4000 is visible. (Native CUDA is also ~4x
+   faster here than the Vulkan path: ~12s vs ~48s per score.)
+
 Create `/etc/systemd/system/ollama-a4000.service`:
 
 ```ini
@@ -271,8 +283,10 @@ After=network-online.target
 [Service]
 User=ollama
 Group=ollama
-Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
-Environment="CUDA_VISIBLE_DEVICES=1"          # A4000, in PCI-bus order (0,2 are the 3090s)
+# Pin to the A4000 by UUID (NOT index — Ollama doesn't order devices by PCI bus).
+Environment="CUDA_VISIBLE_DEVICES=GPU-cb9e616d-a778-32ae-4ba8-22d0b37e729f"
+# Vulkan ignores CUDA_VISIBLE_DEVICES and would re-add the 3090s — turn it off.
+Environment="OLLAMA_VULKAN=0"
 Environment="OLLAMA_HOST=127.0.0.1:11436"
 Environment="OLLAMA_NUM_PARALLEL=1"           # matches the fallback preset's 1 worker
 Environment="OLLAMA_CONTEXT_LENGTH=4096"      # matches the fallback preset's num_ctx
@@ -288,6 +302,8 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable --now ollama-a4000
 curl -s 127.0.0.1:11436/api/tags | grep gemma4:12b   # confirm it serves the 12B
+# Confirm placement: after one score, the A4000 (not a 3090) should hold ~13 GB:
+#   nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
 ```
 
 Then `python a_scrape.py --model-preset fallback` scores on the A4000. Two instances sharing one
