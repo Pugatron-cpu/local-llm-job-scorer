@@ -234,16 +234,67 @@ Two profile keys feed this layer (both optional, see `_template.toml`):
 
 Scores are only comparable within one model, so the model is managed explicitly:
 
-- `config.MODEL_PRESETS` defines `fast` (the 31B on the 48GB NVLink pool, 4 score workers —
-  the default, and exactly the historical behaviour) and `fallback` (`gemma4:12b-it-q8_0`, a
-  16GB-class model for the A4000, 1 worker, for when the pool is busy).
+- `config.MODEL_PRESETS` defines two presets, each pinned to a model, an **Ollama endpoint
+  (i.e. a GPU)**, a context window, worker count, and per-request scoring timeout:
+  - `fast` (default, unchanged behaviour) — the 31B on the **48GB 3090 NVLink pool**, served
+    by the main Ollama instance on `:11434`; 4 workers, `num_ctx` 8192.
+  - `fallback` (`gemma4:12b-it-q8_0`) — the 12B on the **RTX A4000**, served by a *separate*,
+    A4000-pinned Ollama instance on `:11436` (see **A4000 fallback endpoint** below); 1 worker,
+    `num_ctx` 4096, longer timeout. For when the 3090 pool is busy or absent.
 - Select with `--model-preset <name>` or `JOBSEARCH_MODEL_PRESET=<name>`. Selection is
   **explicit only — there is no auto-failover**: every run preflights Ollama at start
-  (`core.ensure_model_available`) and exits loudly, naming both presets, if the chosen
-  model isn't being served. Silently switching models would silently change the score scale.
+  (`core.ensure_model_available`) against *that preset's* endpoint and exits loudly, naming
+  both presets, if the chosen model isn't being served. Silently switching models would
+  silently change the score scale.
 - Every archived row is stamped with the exact model that scored it (`scoring_model`), and
   runs.csv records the active preset + model per run. Rows from before the column are
   blank.
+
+### A4000 fallback endpoint
+
+The `fallback` preset points at `http://localhost:11436`, a **second Ollama instance pinned to
+the A4000**, kept separate from the main `:11434` instance (which is locked to the two 3090s via
+`CUDA_VISIBLE_DEVICES=0,2`). The pipeline does not create it — stand it up once, host-side. It
+shares the existing model store, so the 12B is already present (no re-pull).
+
+(`:11436` is just a free port on this host — `:11435` is already taken by an unrelated Docker
+Ollama container. If you change the port, change it in both `MODEL_PRESETS["fallback"]["ollama_url"]`
+and the unit's `OLLAMA_HOST` below.)
+
+Create `/etc/systemd/system/ollama-a4000.service`:
+
+```ini
+[Unit]
+Description=Ollama (A4000, port 11436)
+After=network-online.target
+
+[Service]
+User=ollama
+Group=ollama
+Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
+Environment="CUDA_VISIBLE_DEVICES=1"          # A4000, in PCI-bus order (0,2 are the 3090s)
+Environment="OLLAMA_HOST=127.0.0.1:11436"
+Environment="OLLAMA_NUM_PARALLEL=1"           # matches the fallback preset's 1 worker
+Environment="OLLAMA_CONTEXT_LENGTH=4096"      # matches the fallback preset's num_ctx
+Environment="OLLAMA_MODELS=/usr/share/ollama/.ollama/models"   # shared store — no re-pull
+ExecStart=/usr/local/bin/ollama serve
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ollama-a4000
+curl -s 127.0.0.1:11436/api/tags | grep gemma4:12b   # confirm it serves the 12B
+```
+
+Then `python a_scrape.py --model-preset fallback` scores on the A4000. Two instances sharing one
+model store is fine (reads only — don't `ollama pull` on both at once). The A4000 12B runs
+*sequentially* and on a slower card, so the scoring stage is markedly slower than the 3090 pool —
+expected for a degraded-mode fallback. Its scores sit on the 12B's own scale (`scoring_model`
+records it); don't compare 12B rows against 31B rows.
 
 ## What it produces
 

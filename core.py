@@ -1009,13 +1009,16 @@ def ensure_model_available():
         served = {str(m.get("name", "")) for m in r.json().get("models", [])}
     except Exception as e:
         sys.exit(f"Ollama is unreachable at {tags_url} ({str(e)[:120]}).\n"
-                 f"  Start it (`ollama serve`), then pick a preset:\n{presets}\n{how}")
+                 f"  Start the instance that serves this preset (the fallback preset needs its\n"
+                 f"  own A4000 instance on :11436 — see README 'A4000 fallback endpoint'), then\n"
+                 f"  pick a preset:\n{presets}\n{how}")
     if MODEL not in served:
         sys.exit(f"Model '{MODEL}' (preset '{ACTIVE_MODEL_PRESET}') is not served by Ollama.\n"
                  f"  Installed models: {', '.join(sorted(served)) or '(none)'}\n"
                  f"  Pull it (`ollama pull {MODEL}`) or pick a preset that is installed:\n"
                  f"{presets}\n{how}")
-    log.info(f"Model preset: {ACTIVE_MODEL_PRESET} -> {MODEL} ({SCORE_WORKERS} score worker(s))")
+    log.info(f"Model preset: {ACTIVE_MODEL_PRESET} -> {MODEL} @ {OLLAMA_URL} "
+             f"({SCORE_WORKERS} score worker(s), num_ctx {NUM_CTX})")
 
 
 def score_job(job: dict, description: str, model: str | None = None) -> dict:
@@ -1040,7 +1043,7 @@ def score_job(job: dict, description: str, model: str | None = None) -> dict:
         "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": 512},
     }
     try:
-        r = requests.post(OLLAMA_URL, json=payload, timeout=TIMEOUT_S)
+        r = requests.post(OLLAMA_URL, json=payload, timeout=SCORE_TIMEOUT_S)
         r.raise_for_status()
         data = r.json()
         # Reasoning models may still route the JSON into `thinking`; accept either.
@@ -1203,7 +1206,7 @@ def ollama_json(prompt: str, schema: dict, num_predict: int = 1500):
         "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": num_predict},
     }
     try:
-        r = requests.post(OLLAMA_URL, json=payload, timeout=TIMEOUT_S)
+        r = requests.post(OLLAMA_URL, json=payload, timeout=SCORE_TIMEOUT_S)
         r.raise_for_status()
         data = r.json()
         raw = (data.get("response") or data.get("thinking") or "").strip()
