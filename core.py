@@ -107,7 +107,7 @@ def canonical_url(u: str) -> str:
 # employer ("Monta" vs "Monta ApS" vs "Monta A/S Danmark"). Stripped before building the
 # cross-source role key so those variants collapse to one.
 _COMPANY_NOISE = {
-    "aps", "as", "ivs", "ps", "amba", "smba", "ks", "pmv",
+    "aps", "as", "is", "ivs", "ps", "amba", "smba", "ks", "pmv",
     "inc", "incorporated", "ltd", "limited", "llc", "plc", "corp", "corporation",
     "gmbh", "ag", "ab", "oy", "oyj", "bv", "nv", "sa", "srl", "spa",
     "holding", "holdings", "group", "groups", "danmark", "denmark", "dk",
@@ -126,8 +126,14 @@ _TITLE_NOISE = {
 def _norm_company(name: str) -> str:
     """Normalise an employer name for identity matching: lowercase, drop punctuation, and
     strip legal-entity suffixes (ApS, A/S, GmbH, ...) and geo/holding words that vary by
-    source. 'Monta ApS', 'Monta A/S Danmark' and 'Monta' all reduce to 'monta'."""
-    toks = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split()
+    source. 'Monta ApS', 'Monta A/S Danmark' and 'Monta' all reduce to 'monta'.
+
+    Dots and slashes are stripped WITHOUT inserting a space, so dotted/slashed legal forms
+    survive as a single token the noise set can match: 'A/S' -> 'as', 'S.M.B.A.' -> 'smba'.
+    (Splitting on them instead left 'a'+'s' behind, and neither fragment is in the noise set,
+    so 'Retriever A/S' failed to collapse onto 'Retriever'.) Remaining separators still split."""
+    cleaned = re.sub(r"[./]+", "", (name or "").lower())
+    toks = re.sub(r"[^a-z0-9]+", " ", cleaned).split()
     return "".join(t for t in toks if t and t not in _COMPANY_NOISE)
 
 

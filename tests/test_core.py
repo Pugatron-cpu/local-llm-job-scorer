@@ -54,6 +54,23 @@ class RoleKeyFingerprint(unittest.TestCase):
         self.assertTrue(a)
         self.assertEqual(a, b)
 
+    def test_slashed_dotted_legal_forms_collapse(self):
+        # 'A/S' tokenised to 'a'+'s' used to survive (neither fragment is noise), so a re-post
+        # under the bare name never matched. Slash/dot legal forms must reduce like 'ApS' does.
+        bare = core.role_key({"company": "Retriever", "title": "Student AI Engineer"})
+        for variant in ("Retriever A/S", "Retriever Danmark A/S", "Retriever I/S",
+                        "Retriever S.M.B.A."):
+            k = core.role_key({"company": variant, "title": "Student AI Engineer"})
+            self.assertTrue(k)
+            self.assertEqual(k, bare, f"{variant!r} should collapse onto 'Retriever'")
+
+    def test_trailing_letter_is_not_a_legal_suffix(self):
+        # Guard the conservative contract: gluing punctuation must NOT drop meaningful single
+        # letters, or 'Company A' and 'Company B' would false-merge.
+        a = core.role_key({"company": "Company A", "title": "Data Student"})
+        b = core.role_key({"company": "Company B", "title": "Data Student"})
+        self.assertNotEqual(a, b)
+
     def test_geo_and_gender_tags_ignored(self):
         a = core.role_key({"company": "Netcompany Danmark", "title": "Backend Developer (m/f/d)"})
         b = core.role_key({"company": "Netcompany", "title": "Backend Developer"})
