@@ -7,3 +7,7 @@ __pycache__/
 master_profile.md
 profiles/*.toml
 !profiles/_template.toml
+
+# Internal planning / changelog docs — keep local, not on the public repo
+CHANGES.md
+PLAN_STAGE5.md
