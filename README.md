@@ -106,7 +106,7 @@ Per-profile keys (all optional; each falls back to the `config.py` default):
 | what gets searched | `queries`, `thehub_queries`, `ats_companies`, `excluded_companies` |
 | the keyword gate | `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms` |
 | the scoring rubric | `track_a_def`, `track_b_def`, `hard_no`, `target_sector`, `track_b_bridge` |
-| the shortlist view | `accepted_employment_types`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
+| the shortlist view | `accepted_employment_types`, `graduate_programmes`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
 | the deterministic extractors | `commutable_areas`, `skills_vocab` |
 | the brief handoff | the `brief_*` wording |
 
