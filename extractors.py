@@ -61,6 +61,18 @@ def extract_employment_type(title: str, description: str) -> str:
         return hits.pop()
     return "unknown"                       # absent, or genuinely conflicting signals
 
+
+# Graduate programmes / trainee intakes. NOT an employment_type: they are full-time roles and
+# the scorer (whose enum is pinned by the golden prompt test) correctly calls them full_time.
+# This is a separate TITLE-only flag the shortlist uses to give them their own section, so it
+# needs no archive column and applies to already-scored rows. \b keeps "undergraduate" out.
+_GRADUATE_RE = re.compile(r"\b(?:graduates?|trainees?|early[\s-]careers?)\b")
+
+
+def is_graduate_programme(title: str) -> bool:
+    """True if the TITLE names a graduate programme / trainee / early-career intake."""
+    return bool(_GRADUATE_RE.search((title or "").lower()))
+
 # ---------------------------------------------------------------------------
 # WORK MODE
 # ---------------------------------------------------------------------------

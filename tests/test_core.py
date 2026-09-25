@@ -220,6 +220,48 @@ class ShortlistRejectReason(unittest.TestCase):
         self.assertEqual(core.shortlist_reject_reason(self._row(employment_type="full_time")),
                          "employment type not targeted")
 
+    def test_graduate_programme_needs_the_profile_opt_in(self):
+        grad = self._row(employment_type="full_time", title="Graduate Programme - Data 2027")
+        orig = core.GRADUATE_PROGRAMMES
+        try:
+            core.GRADUATE_PROGRAMMES = False
+            self.assertEqual(core.shortlist_reject_reason(dict(grad)),
+                             "employment type not targeted")
+            core.GRADUATE_PROGRAMMES = True
+            r = dict(grad)
+            self.assertIsNone(core.shortlist_reject_reason(r))
+            self.assertTrue(r["_graduate"])
+            # the opt-in is for graduate intakes only, not full-time roles in general
+            self.assertEqual(core.shortlist_reject_reason(
+                self._row(employment_type="full_time", title="Data Engineer")),
+                "employment type not targeted")
+            # and the other view filters still apply to graduate rows
+            self.assertEqual(core.shortlist_reject_reason(dict(grad, score="50")),
+                             "score below threshold")
+        finally:
+            core.GRADUATE_PROGRAMMES = orig
+
+    def test_graduate_rows_sort_after_the_main_list(self):
+        import tempfile, csv as _csv
+        rows = [self._row(url="https://x/grad", employment_type="full_time", score="95",
+                          title="Graduate - Data & Analytics"),
+                self._row(url="https://x/student", score="76", title="Student Data")]
+        fd, path = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=core.ARCHIVE_FIELDS)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in core.ARCHIVE_FIELDS})
+        orig = core.GRADUATE_PROGRAMMES
+        try:
+            core.GRADUATE_PROGRAMMES = True
+            kept, _ = core.shortlist_with_reasons(path)
+            self.assertEqual([r["url"] for r in kept], ["https://x/student", "https://x/grad"])
+        finally:
+            core.GRADUATE_PROGRAMMES = orig
+            os.remove(path)
+
     def test_track_b_below_its_bar(self):
         # Track B at 78 clears SCORE_THRESHOLD (75) but not TRACK_B_MIN_SCORE (80).
         reason = core.shortlist_reject_reason(self._row(score="78", track="B"))

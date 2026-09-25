@@ -1472,6 +1472,19 @@ def _dedup_archive(archive_path: str) -> list:
     return list(by_rk.values()) + passthrough
 
 
+def _is_graduate_row(r: dict) -> bool:
+    """A graduate programme / trainee intake the profile has opted into (GRADUATE_PROGRAMMES).
+    Title-derived, so it applies to rows scored before the option existed."""
+    return GRADUATE_PROGRAMMES and extractors.is_graduate_programme(r.get("title", ""))
+
+
+def _type_targeted(r: dict) -> bool:
+    """Employment-type view filter: an accepted type, or an opted-in graduate programme
+    (which is full-time by nature, hence the separate route)."""
+    return (r.get("employment_type", "unknown") in ACCEPTED_EMPLOYMENT_TYPES
+            or _is_graduate_row(r))
+
+
 def shortlist_reject_reason(r: dict, today=None):
     """The single source of truth for the shortlist VIEW filters: returns the reason string a
     (deduped) archive row is NOT on the open shortlist, or None if it qualifies. Shared by
@@ -1485,7 +1498,7 @@ def shortlist_reject_reason(r: dict, today=None):
         score = 0
     if score < SCORE_THRESHOLD:
         return "score below threshold"
-    if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
+    if not _type_targeted(r):
         return "employment type not targeted"
     if REQUIRE_COMMUTABLE and str(r.get("commute_ok", "true")).lower() == "false":
         return "not commutable"
@@ -1499,6 +1512,7 @@ def shortlist_reject_reason(r: dict, today=None):
     if not is_open:
         return "closed / aged out"
     r["_days_left"] = days_left
+    r["_graduate"] = _is_graduate_row(r)
     return None
 
 
@@ -1518,8 +1532,10 @@ def shortlist_with_reasons(archive_path: str):
             continue
         kept.append(r)
 
-    # urgency first (known deadline, soonest), then score
-    kept.sort(key=lambda r: (r["_days_left"] is None,
+    # graduate programmes last (their own report section), then urgency (known deadline,
+    # soonest), then score. The ORDER is the numbering c_prepare uses, so it lives here.
+    kept.sort(key=lambda r: (r["_graduate"],
+                             r["_days_left"] is None,
                              r["_days_left"] if r["_days_left"] is not None else 0,
                              -int(r.get("score") or 0)))
     return kept, dropped
@@ -1548,7 +1564,13 @@ def write_report(report_path: str, archive_path: str):
                 f"(score >= {SCORE_THRESHOLD}, types: {', '.join(sorted(ACCEPTED_EMPLOYMENT_TYPES))})\n\n")
         f.write("Run `python c_prepare.py <number>` to prep one for Claude (e.g. "
                 "`c_prepare.py 1`).\n\n")
+        n_grad = sum(1 for j in matches if j.get("_graduate"))
         for i, j in enumerate(matches, 1):
+            if j.get("_graduate") and (i == 1 or not matches[i - 2].get("_graduate")):
+                f.write(f"## Graduate programmes ({n_grad})\n\n"
+                        "Full-time intakes, shown because the profile sets "
+                        "`graduate_programmes = true`. Check the start date: the scorer "
+                        "doesn't know it.\n\n")
             badge = "Technical" if j.get("track") == "A" else "Foot-in-door"
             if j.get("source") == "snippet":
                 badge += " · ⚠ teaser only"
@@ -1628,7 +1650,7 @@ def _rescore_open(force: bool, limit: int):
     for r in _dedup_archive(MASTER_ARCHIVE):
         if r["score"] < SCORE_THRESHOLD:
             continue
-        if r.get("employment_type", "unknown") not in ACCEPTED_EMPLOYMENT_TYPES:
+        if not _type_targeted(r):
             continue
         if not role_open_status(r, today_d)[0]:
             continue
