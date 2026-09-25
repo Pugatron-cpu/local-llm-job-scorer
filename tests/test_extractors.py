@@ -80,6 +80,19 @@ class EmploymentType(unittest.TestCase):
             "unknown")
 
 
+class GraduateProgramme(unittest.TestCase):
+    def test_graduate_titles(self):
+        for t in ("Graduate - Data & Analytics | Autumn 2027", "IT Graduate Programme 2027",
+                  "Monjasa søger IT Supporter trainee", "Early Career Python Developer",
+                  "Early-careers Data Analyst", "Graduates: AI & Business Systems"):
+            self.assertTrue(extractors.is_graduate_programme(t), t)
+
+    def test_non_graduate_titles(self):
+        for t in ("Undergraduate Student Assistant", "Student Data Engineer", "Postgraduate",
+                  "Data Engineer", "", None):
+            self.assertFalse(extractors.is_graduate_programme(t), t)
+
+
 class WorkMode(unittest.TestCase):
     def test_remote(self):
         self.assertEqual(extractors.extract_work_mode("This role is fully remote."), "remote")

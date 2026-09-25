@@ -721,7 +721,7 @@ def print_shortlist(only_new: bool = False):
         when = f"closes in {days}d" if (dl and isinstance(days, int)) else (dl or "no deadline")
         tag = "· NEW" if kind == "new" else f"· {kind}"
         print(f"  {i:>2}. {r['score']:>3} {r.get('track',''):<4} "
-              f"{(r.get('employment_type','') or ''):<10} "
+              f"{('graduate' if r.get('_graduate') else r.get('employment_type','') or ''):<10} "
               f"{(r.get('company','') or '')[:22]:<22} {(r.get('title','') or '')[:40]:<40} "
               f"{when:<14} {tag}")
 

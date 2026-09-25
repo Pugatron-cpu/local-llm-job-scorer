@@ -160,6 +160,13 @@ SCORE_THRESHOLD = 75
 # shows. Add "full_time" when you're open to it -> existing data resurfaces, no re-scoring.
 ACCEPTED_EMPLOYMENT_TYPES = {"student", "part_time", "internship", "unknown"}
 
+# Graduate programmes (VIEW filter, per profile: graduate_programmes = true). They're full-time,
+# so ACCEPTED_EMPLOYMENT_TYPES hides them; this lets roles whose TITLE says graduate / trainee /
+# early career through anyway, in their own report section, without accepting full-time roles
+# in general. Every other shortlist filter (score, commute, Danish, still open) still applies.
+# Title-derived (extractors.is_graduate_programme), so it also covers already-scored rows.
+GRADUATE_PROGRAMMES = False
+
 # Location filter (VIEW filter, like above). The LLM judges commute_ok = reachable within
 # ~45 min public transport of Ørestad, Copenhagen (Greater Copenhagen / Capital Region:
 # Copenhagen, Frederiksberg, Lyngby, Glostrup, Ballerup, Hellerup, Roskilde, etc.) OR fully
@@ -282,6 +289,18 @@ TARGET_QUERIES = [
     "AI engineer student",       # your best matches are "AI Engineer" titles; none was covered
     "student worker",            # common English title variant (Student Worker @ Podimo, etc.)
     "studentermedarbejder AI",   # Danish spelling variant of studentermedhjælper (was scoring 95)
+    # --- Graduate programmes (2026-09): shown in their own report section when the profile
+    #     sets graduate_programmes = true. No query targeted them before, so almost none were
+    #     found (13 graduate/trainee titles in the whole archive, most found by accident) ---
+    "graduate programme",
+    "graduate data",
+    "graduate AI",
+    "graduate IT",
+    "trainee IT",
+    # --- Field / on-call IT support (2026-09). The rubric already scores IT support as Track A;
+    #     these only add recall for the field-technician titles no query reached ---
+    "IT-tekniker",
+    "IT supporter",
     # --- Track B: foot-in-the-door roles (LLM keeps only the ones at tech companies).
     #     Noisier; comment out if a run gets too slow. Trimmed 2026-07: dropped
     #     "workplace coordinator" + "logistics coordinator student" (generic ops/logistics,
@@ -312,6 +331,10 @@ TECH_TERMS = [
     "automation", "automatisering", "devops", "backend",
     "infrastructure", "infrastruktur", "platform", "cloud", "kubernetes", "docker", "linux",
     "data scientist", "data engineer", "forecast", "forecasting",
+    # Graduate intakes (2026-09): "Graduate Programme 2027" titles often name no tech term.
+    # Cheap: ~16 titles in the whole raw teaser log. Scored like anything else.
+    "graduate", "trainee", "early career",
+    "it-tekniker", "it tekniker", "it supporter",
 ]
 # Foot-in-the-door roles. Kept by the LLM ONLY when the employer is a tech company.
 # Set BRIDGE_TERMS = [] to disable Track B entirely.
@@ -340,6 +363,12 @@ EXCLUDE_TERMS = [
     "mechanical", "electrical", "chemical", "construction",
     # Never a fit, and high volume: sales (40 titles), law, teaching, management/kitchen "chef".
     "sales", " salg", "jurist", "legal counsel", "underviser", "chef",
+    # Added 2026-09 after the same archive check (substring on the title, as matched here):
+    # each hits 2-52 titles, none ever scored >= 75. NOT added: "lead" (6 good roles lost),
+    # "senior" (1 lost, 391 titles), "business developer" (1 lost) -- seniority is the
+    # rubric's job, not a hard veto.
+    "head of", "principal", "account manager", "bdr", "seo", "social media",
+    "content creator", "bogholder", "sælger",
 ]
 
 # --- source: The Hub (thehub.io) -----------------------------------------------------
@@ -405,6 +434,7 @@ THEHUB_QUERIES = [
     #     (the broad "AI"/"data" terms rank differently; these surface role-specific results) ---
     "AI engineer",
     "data scientist",
+    "graduate",                 # graduate programmes (2026-09), see TARGET_QUERIES
 ]
 
 # --- source: Jobnet (job.jobnet.dk) — SCAFFOLD, DISABLED (no public API as of 2026-07) -----
@@ -535,6 +565,8 @@ if _prof.get("target_sector"):
 # wants filtered out of her own shortlist by ACCEPTED_EMPLOYMENT_TYPES={"student", ...}.
 if "accepted_employment_types" in _prof:
     ACCEPTED_EMPLOYMENT_TYPES = {str(t).lower() for t in _prof["accepted_employment_types"]}
+if "graduate_programmes" in _prof:
+    GRADUATE_PROGRAMMES = bool(_prof["graduate_programmes"])
 if _prof.get("score_threshold"):
     SCORE_THRESHOLD = int(_prof["score_threshold"])
 
