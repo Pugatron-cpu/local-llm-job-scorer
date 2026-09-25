@@ -44,7 +44,8 @@ don't really have just brings back roles you don't want.)
    "junior project coordinator").
 
 8. **Hours and type.** How many hours a week, and what type? (full-time / part-time /
-   student job / internship / flexible)
+   student job / internship / graduate programme / flexible) If you're finishing a degree,
+   when do you graduate, and would you start a graduate programme after that?
 
 9. **Anything you do NOT want?** (e.g. no sales, no night shifts, no phone-heavy roles)
 

@@ -339,10 +339,36 @@ model store is fine (reads only — don't `ollama pull` on both at once). The A4
 expected for a degraded-mode fallback. Its scores sit on the 12B's own scale (`scoring_model`
 records it); don't compare 12B rows against 31B rows.
 
+## Graduate programmes (`graduate_programmes`)
+
+Graduate programmes are full-time, so `ACCEPTED_EMPLOYMENT_TYPES` hides them from a student
+shortlist, even though they're exactly what you apply to in your final year. Setting
+`graduate_programmes = true` in a profile lets them through **without** accepting full-time
+roles in general:
+
+- A role counts as a graduate programme if its **title** says `graduate`, `trainee` or
+  `early career` (`extractors.is_graduate_programme`; `undergraduate` / `postgraduate` don't
+  match). It's decided from the title when the shortlist is built, so there's no archive column, no
+  prompt change, and roles scored before the option existed are covered straight away.
+- They appear in their own **Graduate programmes** section at the end of
+  `Weekly_Job_Matches.md`, numbered after the main list, so `c_prepare.py <number>` works as
+  usual (the `c_prepare` listing shows their type as `graduate`).
+- Every other shortlist filter still applies: score, commute, Danish, track B bar, still open.
+  `--rescore` / `--rescore-all` include them.
+- **The start date is not checked.** The scorer doesn't extract it, and nearly all intakes
+  recruiting in autumn start the following year, so check it yourself.
+- A graduate ad with no stated deadline ages out after `REPORT_FRESH_DAYS` like any other role,
+  even though programmes often stay open longer.
+
+The default queries include a few graduate searches (`graduate programme`, `graduate data`,
+`graduate AI`, ...) and `graduate` / `trainee` / `early career` are in the keyword gate: before
+2026-09 no query targeted them, so they were only found by accident.
+
 ## What it produces
 
 - `job_market_data/job_market_data.csv` — the archive: every scored role.
-- `job_market_data/Weekly_Job_Matches.md` — the open shortlist (the actionable list).
+- `job_market_data/Weekly_Job_Matches.md` — the open shortlist (the actionable list), with
+  graduate programmes in their own section at the end when the profile opts in.
 - `job_market_data/runs.csv` — one row per run: timing + funnel counts.
 - `job_market_data/raw_teasers.csv` — **every posting the scraper saw**, every run, logged before
   dedup and before the keyword gate, with the `passed_prefilter` verdict on each. See below.
@@ -399,6 +425,8 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
   (default `owner`). Per-person fields (`candidate_profile`, `location_anchor`, `name`) live in
   `profiles/<name>.toml`, not here.
 - `ACCEPTED_EMPLOYMENT_TYPES` — add `"full_time"` if your situation changes.
+- `GRADUATE_PROGRAMMES` — show graduate / trainee intakes despite being full-time (default
+  `False`; per profile via `graduate_programmes`, see Graduate programmes above).
 - `REQUIRE_COMMUTABLE` — `True` keeps only commutable / remote roles; `False` drops the filter.
 - `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
 - `STALE_AFTER_DAYS` — how old a queued role gets before `--clear-stale` offers to skip it
