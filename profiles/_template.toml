@@ -63,6 +63,11 @@ queries = [
 # false). Useful for someone who wants an English-only shortlist.
 # hide_danish_ads = true
 
+# OPTIONAL — graduate_programmes = true shows graduate programme / trainee / early-career
+# roles (matched on the job title) in their own section of the shortlist, even though they're
+# full-time. For a final-year student. Other full-time roles stay hidden. Default false.
+# graduate_programmes = true
+
 # OPTIONAL — drop the location filter entirely (e.g. someone seeking fully-remote only,
 # anywhere). Default is true (apply the location_anchor above). Uncomment to disable.
 # require_commutable = false
