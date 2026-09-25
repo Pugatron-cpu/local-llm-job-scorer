@@ -635,3 +635,9 @@ TRACKER_CSV     = os.path.join(APPLICATIONS_DIR, "applications.csv") # the appli
 # profile, and a stale archive path means files get MOVED into the wrong folder.
 TRACKER_BACKUPS_KEEP = 3   # auto .bak-<timestamp> copies to retain; 0 = keep every one
 BRIEF_QUEUE_STATUSES = ["interested"]   # tracker statuses that keep a brief in the live queue
+
+# The queue also ages. BRIEF_QUEUE_STATUSES only reacts to a status you set by hand, so a role
+# you looked at once and never settled sits in the queue forever. `c_prepare --clear-stale`
+# settles anything older than this (or past its stated deadline) as "skipped". Age is read from
+# the tracker's date_added, never from the brief filename, so --rebrief doesn't reset the clock.
+STALE_AFTER_DAYS = 30      # default window for --clear-stale; override per run: --clear-stale 14

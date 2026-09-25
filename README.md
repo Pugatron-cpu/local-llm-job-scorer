@@ -41,6 +41,8 @@ python c_prepare.py --status <url> applied   # update a tracked role's status (a
 python c_prepare.py --score-tracker  # backfill model scores for roles added by URL (eval set)
 python c_prepare.py --rebrief <url>  # regenerate the brief for a role already in the tracker
 python c_prepare.py --archive-briefs # sweep settled briefs out of the queue into _archive/
+python c_prepare.py --clear-stale    # DRY RUN: which queued roles have aged out (default 30d)
+python c_prepare.py --clear-stale 14 --yes   # apply it: mark them skipped, archive their briefs
 ```
 
 `--rebrief` exists because prepping an exact-URL duplicate is deliberately a no-op (no re-fetch,
@@ -199,6 +201,31 @@ prints what it moves.
 Note that a hand-edited status still skips what `--status` gives you: the `status_history.csv`
 transition row (which `b_insights --funnel` reads for response times) and the tracker snapshot.
 The archive self-heals; the funnel history does not.
+
+### Ageing the queue out (`--clear-stale`)
+
+Archiving only reacts to a status **you** set. A role you prepped, looked at, and never settled
+keeps status `interested` forever, so its brief never leaves — and the queue drifts back into the
+same noise the archive was built to stop, just more slowly. `--clear-stale` is the ageing pass:
+it settles queued roles older than `STALE_AFTER_DAYS` (config, default 30) or past a stated
+deadline as `skipped`, then runs the normal archive sweep.
+
+- **Dry run by default.** It prints its verdict and writes nothing until you add `--yes`. This is
+  the one command that settles rows you never touched, so a typo'd day count shouldn't be able to
+  bury a fortnight of work.
+- **Age comes from the tracker's `date_added`, not the brief filename** — `--rebrief` rewrites a
+  brief without changing when the role was found, and judging by file date would reset that clock.
+- **A deadline that doesn't parse is treated as no deadline**, never as a reason to skip. The
+  transform occasionally emits junk into that column; it must not cost you a live role.
+- **Rows with an unreadable `date_added` are listed and left alone.** Guessing at a date we
+  couldn't read, to bury a role silently, is the wrong trade. Settle those with `--status`.
+- It goes through the same plumbing as any other status change — tracker snapshot to `_backups/`,
+  one `status_history.csv` row per transition, and a `notes` stamp saying it was automatic. Undo
+  is the usual one: set a status back to `interested` and the next run restores its brief.
+
+It never touches orphan `.md` files with no tracker row (e.g. briefs left by a failed prep, where
+company extraction produced `..._role_2.md`). The sweep is driven by each row's `brief_file`, so
+files no row points at are invisible to it and have to be moved by hand.
 
 ## Deterministic extraction (`extractors.py`)
 
@@ -374,6 +401,9 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `ACCEPTED_EMPLOYMENT_TYPES` — add `"full_time"` if your situation changes.
 - `REQUIRE_COMMUTABLE` — `True` keeps only commutable / remote roles; `False` drops the filter.
 - `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
+- `STALE_AFTER_DAYS` — how old a queued role gets before `--clear-stale` offers to skip it
+  (default 30). Note this is about *your* queue going stale, not the ad closing —
+  `REPORT_FRESH_DAYS` governs the shortlist, this governs `applications/`.
 - `SCORE_THRESHOLD`, `TARGET_QUERIES`; the model via `MODEL_PRESETS` (+ `--model-preset` /
   `JOBSEARCH_MODEL_PRESET` — see Model presets above).
 - `COMMUTABLE_AREAS` — the deterministic commute check's geography (per profile via

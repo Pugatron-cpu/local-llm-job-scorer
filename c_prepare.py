@@ -16,6 +16,10 @@ USAGE
                                                # (new url-adds are now scored automatically)
     python c_prepare.py --rebrief <url>        # regenerate the brief for an already-tracked role
     python c_prepare.py --archive-briefs       # sweep settled briefs out of the queue
+    python c_prepare.py --clear-stale [days] [--yes]
+                                               # age out the queue: skip roles older than
+                                               # `days` (default 30) or past deadline.
+                                               # Reports only, unless --yes.
 
 applications/ is the live queue: it holds a brief only while its role is still worth acting on
 (status "interested"). Once a role is applied/rejected/skipped, --status moves its brief into
@@ -479,6 +483,87 @@ def archive_settled_briefs(quiet: bool = False) -> int:
     return moved
 
 
+# --- stale sweep (age out the queue) ------------------------------------------------------
+# archive_settled_briefs() only reacts to a status you already set. Nothing ages the queue
+# itself, so a role you looked at once and never settled sits in applications/ forever and
+# quietly rots the "what do I apply to next" signal. This is the aging pass: it decides
+# staleness from the TRACKER (date_added / deadline), never from the brief's filename, because
+# --rebrief rewrites a brief without changing when the role was found. The default window is
+# config.STALE_AFTER_DAYS.
+STALE_AFTER_DAYS = config.STALE_AFTER_DAYS
+
+
+def _row_age_days(r: dict):
+    """Days since this row was added, or None if date_added is missing or unparseable."""
+    d = core._parse_date(r.get("date_added"))
+    return None if d is None else (datetime.now().date() - d).days
+
+
+def _deadline_passed(r: dict) -> bool:
+    """True only for a deadline that parses AND is in the past. Junk in the column (the LLM
+    occasionally emits a stray bool) parses to None and is treated as 'no deadline', never as
+    a reason to skip a role."""
+    dl = core._parse_date(r.get("deadline"))
+    return dl is not None and dl < datetime.now().date()
+
+
+def clear_stale(days: int = STALE_AFTER_DAYS, apply: bool = False) -> int:
+    """Mark still-queued roles 'skipped' once they're older than `days` or past their deadline.
+
+    DRY-RUN unless apply=True — this is the one command that settles rows you never touched,
+    so it prints its verdict and waits for --yes rather than acting on a typo'd day count.
+    Rows with an unreadable date_added are listed and LEFT ALONE: skipping on a date we
+    couldn't parse would silently bury roles. Undo is the same as any other status change —
+    set it back to 'interested' and the next sweep restores the brief to the queue.
+    """
+    rows = _load_tracker()
+    hits, unknown = [], []
+    for r in rows:
+        if (r.get("status") or "").strip() not in config.BRIEF_QUEUE_STATUSES:
+            continue
+        age = _row_age_days(r)
+        if age is None:
+            unknown.append(r)
+        elif age >= days or _deadline_passed(r):
+            hits.append((r, age))
+
+    if not hits and not unknown:
+        print(f"Nothing stale: no queued role is older than {days} days.")
+        return 0
+
+    for r, age in hits:
+        why = "past deadline" if _deadline_passed(r) else f"{age}d old"
+        print(f"  [{age:>4}d] {(r.get('company','') or '')[:26]:<28} "
+              f"{(r.get('role','') or '')[:32]:<34} {r.get('brief_file','')}  ({why})")
+    for r in unknown:
+        print(f"  [   ?d] {(r.get('company','') or '')[:26]:<28} "
+              f"unreadable date_added — left alone")
+
+    if not apply:
+        print(f"\n{len(hits)} role(s) would be skipped, {len(unknown)} skipped over. "
+              f"Nothing written. To apply:\n"
+              f"  python c_prepare.py --clear-stale {days} --yes")
+        return 0
+    if not hits:
+        print("\nNothing to apply.")
+        return 0
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    transitions = [{"date": today, "url": r.get("url", ""), "company": r.get("company", ""),
+                    "role": r.get("role", ""), "old_status": (r.get("status") or "").strip(),
+                    "new_status": "skipped"} for r, _ in hits]
+    for r, age in hits:
+        r["status"] = "skipped"
+        note = (r.get("notes") or "").strip()
+        r["notes"] = f"{note} | auto-skipped {today} (stale, {age}d)".lstrip(" |")
+
+    _save_tracker(rows)                   # snapshots to _backups/ first
+    _append_status_history(transitions)   # only after the tracker write succeeds
+    moved = archive_settled_briefs()
+    print(f"\nSkipped {len(hits)} stale role(s); {moved} brief(s) moved to _archive/.")
+    return len(hits)
+
+
 def _bullets(items, empty="_(none extracted)_"):
     items = [str(x).strip() for x in (items or []) if str(x).strip()]
     return "\n".join(f"- {x}" for x in items) if items else empty
@@ -885,6 +970,18 @@ def main(argv):
         rebrief(argv[1])
         return
 
+    if argv[0] == "--clear-stale":
+        rest = argv[1:]
+        apply = "--yes" in rest
+        nums = [a for a in rest if a.isdigit()]
+        unknown_args = [a for a in rest if a != "--yes" and not a.isdigit()]
+        if unknown_args or len(nums) > 1:
+            print("Usage: python c_prepare.py --clear-stale [days] [--yes]\n"
+                  f"  days defaults to {STALE_AFTER_DAYS}; without --yes it only reports.")
+            return
+        clear_stale(int(nums[0]) if nums else STALE_AFTER_DAYS, apply)
+        return
+
     if argv[0] == "--archive-briefs":
         n = archive_settled_briefs()
         live = len([f for f in os.listdir(config.APPLICATIONS_DIR) if f.endswith(".md")]) \
@@ -907,7 +1004,8 @@ def main(argv):
               "  python c_prepare.py --status <url> applied\n"
               "  python c_prepare.py --score-tracker # backfill scores for manually-added roles\n"
               "  python c_prepare.py --rebrief <url> # regenerate the brief for a tracked role\n"
-              "  python c_prepare.py --archive-briefs # move settled briefs out of the queue")
+              "  python c_prepare.py --archive-briefs # move settled briefs out of the queue\n"
+              "  python c_prepare.py --clear-stale [days] [--yes]  # age out the queue")
 
 
 if __name__ == "__main__":
