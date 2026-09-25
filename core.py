@@ -57,6 +57,7 @@ from bs4 import BeautifulSoup
 
 from config import *   # settings: paths, MODEL, thresholds, ACCEPTED_*, REQUIRE_COMMUTABLE, THEHUB_*, ...
 import extractors                        # deterministic field extraction (post-score merge)
+import watchlist                         # named companies' own careers pages (profile [[watch]])
 from extractors import parse_deadline    # shared deadline parser (regex lives in extractors.py)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -702,6 +703,17 @@ def scrape_ats(cutoff_date):
             log.error(f"  [ats] {provider}:{slug} failed and was skipped: {str(e)[:160]}")
         time.sleep(random.uniform(0.3, 0.8))
 
+def scrape_watch(cutoff_date):
+    """Source adapter for the company watchlist (watchlist.py). Ignores cutoff_date on
+    purpose: a posting still listed on the careers page is open, however old it is."""
+    log.info(f"--- [watch] {len(WATCHLIST)} companies ---")
+    yield from watchlist.scrape(WATCHLIST, WATCH_STATE, WATCH_CONFIRM_TERMS, WATCH_AREA_TERMS,
+                                load_seen_urls(MASTER_ARCHIVE), canonical_url, log)
+
+
+# `a_scrape.py --watch` sets this: run the watchlist source only (a quick daytime check).
+WATCH_ONLY = False
+
 # ---------------------------------------------------------------------------
 # SOURCE SEAM
 # ---------------------------------------------------------------------------
@@ -711,13 +723,17 @@ def iter_sources(cutoff_date):
     isolated in its own try/except: a source that raises is logged and skipped, so a flaky or
     not-yet-verified source can never take down the run. Add a new source by appending another
     guarded generator here (e.g. an ATS-watchlist source for stage 2)."""
-    sources = [("jobindex", _jobindex_teasers)]
-    if THEHUB_ENABLED:
-        sources.append(("thehub", scrape_thehub))
-    if JOBNET_ENABLED:
-        sources.append(("jobnet", scrape_jobnet))
-    if ATS_ENABLED:
-        sources.append(("ats", scrape_ats))
+    sources = []
+    if WATCHLIST:                        # first: the companies you have a way in to
+        sources.append(("watch", scrape_watch))
+    if not WATCH_ONLY:
+        sources.append(("jobindex", _jobindex_teasers))
+        if THEHUB_ENABLED:
+            sources.append(("thehub", scrape_thehub))
+        if JOBNET_ENABLED:
+            sources.append(("jobnet", scrape_jobnet))
+        if ATS_ENABLED:
+            sources.append(("ats", scrape_ats))
 
     for name, fn in sources:
         try:
@@ -1483,6 +1499,64 @@ def _fresh_days(r: dict):
     return GRADUATE_FRESH_DAYS if _is_graduate_row(r) else REPORT_FRESH_DAYS
 
 
+_watch_cache = {"mtime": None, "state": {}, "by_canon": {}, "by_title": {}}
+
+
+def _title_key(company: str, title: str) -> tuple:
+    return (company, re.sub(r"\W+", " ", (title or "").lower()).strip())
+
+
+def _watch_state():
+    """(state, canonical-url index) of watchlist_postings.csv, re-read only when it changes."""
+    try:
+        mtime = os.path.getmtime(WATCH_STATE)
+    except OSError:
+        return {}, {}
+    if _watch_cache["mtime"] != mtime:
+        st = watchlist.load_state(WATCH_STATE)
+        _watch_cache.update(mtime=mtime, state=st,
+                            by_canon={canonical_url(u): r for u, r in st.items()},
+                            by_title={_title_key(r.get("company", ""), r.get("title", "")): r
+                                      for u, r in st.items() if r.get("title")})
+    return _watch_cache["state"], _watch_cache["by_canon"]
+
+
+def _watch_view(r: dict, today):
+    """Watchlist visibility for one archive row. None = not a watched company (or a board
+    row outside the location): the normal filters decide. Otherwise a reason string to hide
+    it, or "" to show it in the Watchlist section (sets r['_watch*'] and r['_days_left']).
+    Watched rows skip the score/type/commute/Danish filters: every posting is wanted."""
+    if not WATCHLIST:
+        return None
+    entry = next((w for w in WATCHLIST
+                  if watchlist.company_matches(r.get("company", ""), w["aliases"])), None)
+    if entry is None:
+        return None
+    state, by_canon = _watch_state()
+    st = by_canon.get(canonical_url(r.get("url", "")))
+    if st is not None:                                   # read from the careers page itself
+        checked = state.get(watchlist.check_key(st.get("company", "")), {}).get("last_seen", "")
+        if st.get("last_seen", "") < checked:
+            return "no longer listed on the careers page"
+        status, first_seen, days_left = st.get("location_status", ""), st.get("first_seen", ""), None
+    else:                                                # found on a job board
+        twin = _watch_cache["by_title"].get(_title_key(entry["name"], r.get("title", "")))
+        status, _ = (twin["location_status"], "") if twin else watchlist.location_status(
+            r.get("location", "") if str(r.get("location", "")).upper() != "N/A" else "",
+            entry.get("confirm_terms") or WATCH_CONFIRM_TERMS,
+            entry.get("area_terms") or WATCH_AREA_TERMS)
+        is_open, days_left = role_open_status(r, today)
+        if not is_open:
+            return "closed / aged out"
+        first_seen = r.get("scraped_date", "")
+    if status == watchlist.ELSEWHERE:
+        return None                   # not at the watched location: judge it like any role
+    seen_d = _parse_date(first_seen)
+    r.update(_watch=entry["name"], _watch_loc=status, _days_left=days_left, _graduate=False,
+             _watch_new=bool(seen_d and (today - seen_d).days <= WATCH_NEW_DAYS))
+    return ""
+
+
 def _type_targeted(r: dict) -> bool:
     """Employment-type view filter: an accepted type, or an opted-in graduate programme
     (which is full-time by nature, hence the separate route)."""
@@ -1497,6 +1571,10 @@ def shortlist_reject_reason(r: dict, today=None):
     count printed during a run matches Weekly_Job_Matches.md instead of over-counting on just
     score+type. On a qualifying row it sets r['_days_left'] for downstream sorting/display."""
     today = today or datetime.now().date()
+    r["_watch"] = ""
+    w = _watch_view(r, today)
+    if w is not None:
+        return w or None
     try:
         score = int(r.get("score") or 0)
     except (ValueError, TypeError):
@@ -1539,7 +1617,9 @@ def shortlist_with_reasons(archive_path: str):
 
     # graduate programmes last (their own report section), then urgency (known deadline,
     # soonest), then score. The ORDER is the numbering c_prepare uses, so it lives here.
-    kept.sort(key=lambda r: (r["_graduate"],
+    # Watchlist first: those are the companies you have a way in to.
+    kept.sort(key=lambda r: (not r["_watch"],
+                             r["_graduate"],
                              r["_days_left"] is None,
                              r["_days_left"] if r["_days_left"] is not None else 0,
                              -int(r.get("score") or 0)))
@@ -1570,7 +1650,15 @@ def write_report(report_path: str, archive_path: str):
         f.write("Run `python c_prepare.py <number>` to prep one for Claude (e.g. "
                 "`c_prepare.py 1`).\n\n")
         n_grad = sum(1 for j in matches if j.get("_graduate"))
+        n_watch = sum(1 for j in matches if j.get("_watch"))
         for i, j in enumerate(matches, 1):
+            if j.get("_watch") and i == 1:
+                f.write(f"## Watchlist ({n_watch})\n\n"
+                        "Every open posting at a watched company, whatever its score or type "
+                        "(the score is still shown, for fit).\n\n")
+            if n_watch and not j.get("_watch") and not j.get("_graduate") \
+                    and matches[i - 2].get("_watch"):
+                f.write("## Shortlist\n\n")
             if j.get("_graduate") and (i == 1 or not matches[i - 2].get("_graduate")):
                 f.write(f"## Graduate programmes ({n_grad})\n\n"
                         "Full-time intakes, shown because the profile sets "
@@ -1582,6 +1670,13 @@ def write_report(report_path: str, archive_path: str):
 
             # metadata line: employment type / work mode / Danish flag / deadline
             meta = []
+            if j.get("_watch"):
+                if j.get("_watch_new"):
+                    meta.append("🆕 NEW")
+                meta.append({watchlist.CONFIRMED: "📍 location confirmed",
+                             watchlist.AREA: "⚠ location unconfirmed (check the ad)",
+                             watchlist.UNKNOWN: "⚠ location unknown (ad unreadable)",
+                             }.get(j.get("_watch_loc"), "⚠ location unknown"))
             et = j.get("employment_type", "")
             if et and et != "unknown":
                 meta.append(et)
@@ -1780,6 +1875,8 @@ def main():
     # it's seen (including the ones about to be dropped). Same function Stage 2 uses below — one
     # definition, so the logged verdict can never drift from the real one.
     def _keep_candidate(j):
+        if j.get("source_site") == "watch":
+            return True   # a watched company: every posting is wanted, keywords or not
         if j.get("source_site") == "thehub":
             title = f" {j['title']} ".lower()
             if any(term in title for term in EXCLUDE_TERMS):
