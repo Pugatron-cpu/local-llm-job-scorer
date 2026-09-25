@@ -194,6 +194,10 @@ COMMUTABLE_AREAS = {
 #   stated deadline passed -> dropped; future deadline -> kept until then (trusted over age);
 #   no deadline -> kept until REPORT_FRESH_DAYS after first seen, then assumed filled.
 REPORT_FRESH_DAYS = 21
+# Graduate programmes (see GRADUATE_PROGRAMMES) get a longer no-deadline window: intakes recruit
+# for months (an "Autumn 2027" programme seen in early September is still open in October), so
+# 21 days hid live ones. Only applies to title-matched graduate rows when the profile opts in.
+GRADUATE_FRESH_DAYS = 60
 
 # Stage 3b scoring parallelism — comes from the active MODEL PRESET above (the 48GB pool
 # takes 4 parallel slots, the A4000 fallback runs sequential). Set OLLAMA_NUM_PARALLEL on

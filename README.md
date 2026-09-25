@@ -357,8 +357,9 @@ roles in general:
   `--rescore` / `--rescore-all` include them.
 - **The start date is not checked.** The scorer doesn't extract it, and nearly all intakes
   recruiting in autumn start the following year, so check it yourself.
-- A graduate ad with no stated deadline ages out after `REPORT_FRESH_DAYS` like any other role,
-  even though programmes often stay open longer.
+- A graduate ad with no stated deadline stays on the shortlist for `GRADUATE_FRESH_DAYS` (60)
+  after it was last seen, not the usual `REPORT_FRESH_DAYS` (21): intakes recruit for months.
+  A stated deadline still wins.
 
 The default queries include a few graduate searches (`graduate programme`, `graduate data`,
 `graduate AI`, ...) and `graduate` / `trainee` / `early career` are in the keyword gate: before
@@ -428,7 +429,8 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `GRADUATE_PROGRAMMES` — show graduate / trainee intakes despite being full-time (default
   `False`; per profile via `graduate_programmes`, see Graduate programmes above).
 - `REQUIRE_COMMUTABLE` — `True` keeps only commutable / remote roles; `False` drops the filter.
-- `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21).
+- `REPORT_FRESH_DAYS` — how long a no-deadline role stays on the shortlist (default 21);
+  `GRADUATE_FRESH_DAYS` (60) is the same for graduate programmes.
 - `STALE_AFTER_DAYS` — how old a queued role gets before `--clear-stale` offers to skip it
   (default 30). Note this is about *your* queue going stale, not the ad closing —
   `REPORT_FRESH_DAYS` governs the shortlist, this governs `applications/`.
