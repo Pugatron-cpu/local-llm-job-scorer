@@ -1478,6 +1478,11 @@ def _is_graduate_row(r: dict) -> bool:
     return GRADUATE_PROGRAMMES and extractors.is_graduate_programme(r.get("title", ""))
 
 
+def _fresh_days(r: dict):
+    """No-deadline freshness window for this row: graduate intakes stay open for months."""
+    return GRADUATE_FRESH_DAYS if _is_graduate_row(r) else REPORT_FRESH_DAYS
+
+
 def _type_targeted(r: dict) -> bool:
     """Employment-type view filter: an accepted type, or an opted-in graduate programme
     (which is full-time by nature, hence the separate route)."""
@@ -1508,7 +1513,7 @@ def shortlist_reject_reason(r: dict, today=None):
         return "ad written in Danish (hidden by filter)"
     if r.get("track") == "B" and score < TRACK_B_MIN_SCORE:
         return f"track B below its own bar ({TRACK_B_MIN_SCORE})"
-    is_open, days_left = role_open_status(r, today)
+    is_open, days_left = role_open_status(r, today, _fresh_days(r))
     if not is_open:
         return "closed / aged out"
     r["_days_left"] = days_left
@@ -1652,7 +1657,7 @@ def _rescore_open(force: bool, limit: int):
             continue
         if not _type_targeted(r):
             continue
-        if not role_open_status(r, today_d)[0]:
+        if not role_open_status(r, today_d, _fresh_days(r))[0]:
             continue
         if not force and r.get("danish_level", "") and r.get("ad_language", "") != "":
             continue                       # flags already present -> nothing to fix

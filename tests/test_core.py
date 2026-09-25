@@ -241,6 +241,26 @@ class ShortlistRejectReason(unittest.TestCase):
         finally:
             core.GRADUATE_PROGRAMMES = orig
 
+    def test_graduate_rows_get_the_longer_no_deadline_window(self):
+        from datetime import datetime, timedelta
+        seen = (datetime.now().date() - timedelta(days=30)).isoformat()   # > 21, < 60
+        grad = self._row(employment_type="full_time", title="Graduate - Data 2027",
+                         scraped_date=seen)
+        orig = core.GRADUATE_PROGRAMMES
+        try:
+            core.GRADUATE_PROGRAMMES = True
+            self.assertIsNone(core.shortlist_reject_reason(dict(grad)))
+            # an ordinary role seen as long ago has aged out
+            self.assertEqual(core.shortlist_reject_reason(self._row(scraped_date=seen)),
+                             "closed / aged out")
+            # and past GRADUATE_FRESH_DAYS the graduate row ages out too
+            old = (datetime.now().date()
+                   - timedelta(days=core.GRADUATE_FRESH_DAYS + 1)).isoformat()
+            self.assertEqual(core.shortlist_reject_reason(dict(grad, scraped_date=old)),
+                             "closed / aged out")
+        finally:
+            core.GRADUATE_PROGRAMMES = orig
+
     def test_graduate_rows_sort_after_the_main_list(self):
         import tempfile, csv as _csv
         rows = [self._row(url="https://x/grad", employment_type="full_time", score="95",
