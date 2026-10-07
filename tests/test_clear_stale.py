@@ -70,9 +70,11 @@ class ClearStaleTests(unittest.TestCase):
         shutil.rmtree(self._dir)
 
     def test_dry_run_writes_nothing(self):
-        before = open(config.TRACKER_CSV, encoding="utf-8").read()
+        with open(config.TRACKER_CSV, encoding="utf-8") as f:
+            before = f.read()
         self.assertEqual(c_prepare.clear_stale(30, apply=False), 0)
-        self.assertEqual(open(config.TRACKER_CSV, encoding="utf-8").read(), before)
+        with open(config.TRACKER_CSV, encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)
         self.assertFalse(os.path.exists(c_prepare._status_history_path()))
 
     def test_apply_skips_old_and_past_deadline_only(self):

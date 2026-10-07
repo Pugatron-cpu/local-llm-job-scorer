@@ -13,6 +13,9 @@ ads, scores them with the local LLM, appends to the archive
     python a_scrape.py --rescore-all # escape hatch: re-score ALL still-open shortlist rows
                                      # (not just flag-blank ones) — use after a model/prompt
                                      # change so the existing shortlist reflects it
+    python a_scrape.py --watch       # quick check: ONLY the company watchlist (profile
+                                     # [[watch]] entries) -> score new postings + rebuild
+                                     # the report. Skips Jobindex / The Hub.
     python a_scrape.py --model-preset fallback
                                      # score with another config.MODEL_PRESETS entry (e.g.
                                      # the A4000-sized fallback). EXPLICIT only — no
@@ -26,6 +29,7 @@ core.py. See README.md.
 
 import sys
 
+import core
 from core import main, rescore_missing_flags, rescore_all
 
 if __name__ == "__main__":
@@ -34,4 +38,8 @@ if __name__ == "__main__":
     elif "--rescore" in sys.argv:
         rescore_missing_flags()
     else:
+        if "--watch" in sys.argv:
+            if not core.WATCHLIST:
+                sys.exit("--watch: this profile has no [[watch]] entries (see watchlist.py).")
+            core.WATCH_ONLY = True
         main()

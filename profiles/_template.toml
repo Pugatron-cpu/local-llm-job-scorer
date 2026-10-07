@@ -68,6 +68,19 @@ queries = [
 # full-time. For a final-year student. Other full-time roles stay hidden. Default false.
 # graduate_programmes = true
 
+# OPTIONAL — company watchlist: read these companies' OWN careers pages on every run and show
+# every in-location posting at the top of the report, whatever its score. See README "Company
+# watchlist" and watchlist.py. Regexes are easiest as TOML literal strings ('...').
+# watch_confirm_terms = ["østerbro", "2100 københavn"]   # location confirmed
+# watch_area_terms    = ["copenhagen", "københavn"]       # shown, flagged "unconfirmed"
+#
+# [[watch]]
+# name          = "Example A/S"
+# url           = "https://example.hr-on.com/"
+# render        = "static"                 # or "browser" for JavaScript-built lists
+# link_regex    = 'show-job/(\d+)'
+# link_template = "https://example.hr-on.com/show-job/{0}"
+
 # OPTIONAL — drop the location filter entirely (e.g. someone seeking fully-remote only,
 # anywhere). Default is true (apply the location_anchor above). Uncomment to disable.
 # require_commutable = false

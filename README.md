@@ -29,6 +29,7 @@ run them directly.
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
+python a_scrape.py --watch    # quick check of the company watchlist only (see below)
 python a_scrape.py --model-preset fallback  # score with another MODEL_PRESETS entry (see below)
 python b_insights.py          # funnel + score-vs-behaviour + market + skill demand
 python b_insights.py --funnel # just the application funnel, response times & overdue chasing
@@ -106,6 +107,7 @@ Per-profile keys (all optional; each falls back to the `config.py` default):
 | what gets searched | `queries`, `thehub_queries`, `ats_companies`, `excluded_companies` |
 | the keyword gate | `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms` |
 | the scoring rubric | `track_a_def`, `track_b_def`, `hard_no`, `target_sector`, `track_b_bridge` |
+| the company watchlist | `[[watch]]` entries, `watch_confirm_terms`, `watch_area_terms` |
 | the shortlist view | `accepted_employment_types`, `graduate_programmes`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
 | the deterministic extractors | `commutable_areas`, `skills_vocab` |
 | the brief handoff | the `brief_*` wording |
@@ -365,12 +367,51 @@ The default queries include a few graduate searches (`graduate programme`, `grad
 `graduate AI`, ...) and `graduate` / `trainee` / `early career` are in the keyword gate: before
 2026-09 no query targeted them, so they were only found by accident.
 
+## Company watchlist (`watchlist.py`)
+
+For companies you have a way in to. They often post only on their own careers site, which the
+keyword boards never see, and the first you hear of a role is after it closed. The watchlist
+reads each company's careers page on **every run** (first, before the boards), and:
+
+- records every posting it lists in `job_market_data/watchlist_postings.csv`;
+- reads each **new** posting once and checks its location (below);
+- sends the in-location ones through the normal pipeline to be scored, skipping the keyword
+  gate: every posting at a watched company is wanted;
+- shows them in a **Watchlist** section at the top of `Weekly_Job_Matches.md`, whatever their
+  score or type (the score is still shown, for fit), tagged `🆕 NEW` for a week.
+
+A posting counts as open **while it is still listed on the careers page**, not by age. Roles at a
+watched company that come in from Jobindex / The Hub are shown there too.
+
+**Location.** `watch_confirm_terms` (e.g. the building's name and address) mean *confirmed*;
+`watch_area_terms` (e.g. Copenhagen) mean *shown, flagged "unconfirmed"*; anything else is
+hidden, and an ad that couldn't be read is shown as *location unknown* rather than dropped. The
+posting's own location field (`Location: Spain`, `Lokation: København Ø`) decides alone when it
+has one, and company boilerplate ("Founded in Copenhagen", "our Copenhagen HQ") doesn't count.
+Per company you can override the terms, or give a `location_regex` whose group 1 is the location
+(e.g. Dalux ends every ad with `Dalux | <office>`).
+
+**Entries** live in the profile (they're personal). Each needs `name`, `url` (the page that lists
+the jobs), `link_regex` (finds each posting in that page's source) and optionally
+`link_template` (builds the url from the regex groups), `render = "browser"` for pages that
+build their list with JavaScript, and `aliases` (how job boards spell the company). Most boards
+fit one of a few shapes: plain links on the company site, an HR-ON list (`show-job/<id>`), an
+Emply board (`/ad/<slug>/<id>`), a sitemap filtered by the regex, or a JSON service (Nexi's
+Oracle one). Check a new entry with a dry run before relying on it; `watchlist.py` has the format.
+
+`python a_scrape.py --watch` runs only the watchlist (score the new postings, rebuild the report)
+for a quick check between daily runs. The first run reads every current posting once (a few
+minutes for a big board); after that only new ones are read. Deleting `watchlist_postings.csv`
+is safe: the next run rebuilds it.
+
 ## What it produces
 
 - `job_market_data/job_market_data.csv` — the archive: every scored role.
 - `job_market_data/Weekly_Job_Matches.md` — the open shortlist (the actionable list), with
   graduate programmes in their own section at the end when the profile opts in.
 - `job_market_data/runs.csv` — one row per run: timing + funnel counts.
+- `job_market_data/watchlist_postings.csv` — every posting seen on a watched careers page, with
+  its location verdict and first/last seen dates (derived; safe to delete).
 - `job_market_data/raw_teasers.csv` — **every posting the scraper saw**, every run, logged before
   dedup and before the keyword gate, with the `passed_prefilter` verdict on each. See below.
 - `applications/` — the live queue: an Application Brief per role still worth acting on, plus

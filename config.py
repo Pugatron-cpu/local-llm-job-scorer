@@ -628,6 +628,23 @@ if "danish_ok" in _prof:
 if "hide_danish_ads" in _prof:
     EXCLUDE_DANISH_ADS = bool(_prof["hide_danish_ads"])
 
+# --- company watchlist (watchlist.py) — per person, off unless the profile lists companies ---
+# [[watch]] tables name companies whose OWN careers pages are read every run; every in-location
+# posting is scored and shown in a Watchlist section at the top of the report, whatever its
+# score or type. watch_confirm_terms decide "location confirmed", watch_area_terms "shown but
+# unconfirmed"; a posting matching neither is hidden. See watchlist.py for the entry format.
+WATCHLIST = []
+for _w in _prof.get("watch", []):
+    if not all(_w.get(k) for k in ("name", "url", "link_regex")):
+        sys.exit(f"Profile '{ACTIVE_PROFILE}': every [[watch]] entry needs name, url and "
+                 f"link_regex (got {dict(_w)!r}).")
+    _w = dict(_w)
+    _w["aliases"] = sorted({str(a).lower() for a in _w.get("aliases", [])} | {_w["name"].lower()})
+    WATCHLIST.append(_w)
+WATCH_CONFIRM_TERMS = [str(t).lower() for t in _prof.get("watch_confirm_terms", [])]
+WATCH_AREA_TERMS    = [str(t).lower() for t in _prof.get("watch_area_terms", [])]
+WATCH_NEW_DAYS      = 7      # a watched posting is tagged NEW for this many days after first seen
+
 # --- Application Brief handoff (c_prepare) — per person -------------------------------
 # The brief c_prepare writes ends with a HANDOFF paragraph telling a downstream Claude how to
 # draft the CV + letter. That instruction is personal (which master-profile file is the source
@@ -652,6 +669,7 @@ else:
 MASTER_ARCHIVE  = os.path.join(BASE_DIR, "job_market_data.csv")      # every scored role (the DB)
 MARKDOWN_REPORT = os.path.join(BASE_DIR, "Weekly_Job_Matches.md")
 RUNS_LOG        = os.path.join(BASE_DIR, "runs.csv")                 # one row per run: timing + funnel
+WATCH_STATE     = os.path.join(BASE_DIR, "watchlist_postings.csv")   # watchlist: every posting seen
 
 # Raw teaser log: EVERY posting the scraper sees, every run, written BEFORE dedup and before the
 # keyword pre-filter — so it records what was thrown away, not just what survived. The archive is
