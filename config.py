@@ -198,6 +198,8 @@ REPORT_FRESH_DAYS = 21
 # for months (an "Autumn 2027" programme seen in early September is still open in October), so
 # 21 days hid live ones. Only applies to title-matched graduate rows when the profile opts in.
 GRADUATE_FRESH_DAYS = 60
+# The report opens with every shortlisted role whose stated deadline is this close.
+CLOSING_SOON_DAYS = 14
 
 # Stage 3b scoring parallelism — comes from the active MODEL PRESET above (the 48GB pool
 # takes 4 parallel slots, the A4000 fallback runs sequential). Set OLLAMA_NUM_PARALLEL on
@@ -629,21 +631,21 @@ if "hide_danish_ads" in _prof:
     EXCLUDE_DANISH_ADS = bool(_prof["hide_danish_ads"])
 
 # --- company watchlist (watchlist.py) — per person, off unless the profile lists companies ---
-# [[watch]] tables name companies whose OWN careers pages are read every run; every in-location
-# posting is scored and shown in a Watchlist section at the top of the report, whatever its
-# score or type. watch_confirm_terms decide "location confirmed", watch_area_terms "shown but
-# unconfirmed"; a posting matching neither is hidden. See watchlist.py for the entry format.
+# [[watch]] tables name companies whose OWN careers pages are read every run (url + link_regex,
+# or a typed `source` API). Every posting not confidently outside the commutable areas is
+# scored; the report shows the MATCHING ones (same filters as any role) in their own section.
+# An entry with no url/source is watched on the job boards only. Per entry: `aliases` (how the
+# boards spell the company; every board ad at it skips the keyword gate so it gets scored),
+# `danish_ok` (don't hide its Danish ads), `queries` (extra Jobindex searches, e.g. its name).
 WATCHLIST = []
 for _w in _prof.get("watch", []):
-    if not all(_w.get(k) for k in ("name", "url", "link_regex")):
-        sys.exit(f"Profile '{ACTIVE_PROFILE}': every [[watch]] entry needs name, url and "
-                 f"link_regex (got {dict(_w)!r}).")
+    if not _w.get("name") or (_w.get("url") and not (_w.get("link_regex") or _w.get("source"))):
+        sys.exit(f"Profile '{ACTIVE_PROFILE}': every [[watch]] entry needs a name, and a url "
+                 f"needs a link_regex or a source (got {dict(_w)!r}).")
     _w = dict(_w)
     _w["aliases"] = sorted({str(a).lower() for a in _w.get("aliases", [])} | {_w["name"].lower()})
     WATCHLIST.append(_w)
-WATCH_CONFIRM_TERMS = [str(t).lower() for t in _prof.get("watch_confirm_terms", [])]
-WATCH_AREA_TERMS    = [str(t).lower() for t in _prof.get("watch_area_terms", [])]
-WATCH_NEW_DAYS      = 7      # a watched posting is tagged NEW for this many days after first seen
+    TARGET_QUERIES += [str(q) for q in _w.get("queries", []) if str(q) not in TARGET_QUERIES]
 
 # --- Application Brief handoff (c_prepare) — per person -------------------------------
 # The brief c_prepare writes ends with a HANDOFF paragraph telling a downstream Claude how to

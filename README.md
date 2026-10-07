@@ -107,7 +107,7 @@ Per-profile keys (all optional; each falls back to the `config.py` default):
 | what gets searched | `queries`, `thehub_queries`, `ats_companies`, `excluded_companies` |
 | the keyword gate | `tech_terms`, `bridge_terms`, `include_terms`, `exclude_terms` |
 | the scoring rubric | `track_a_def`, `track_b_def`, `hard_no`, `target_sector`, `track_b_bridge` |
-| the company watchlist | `[[watch]]` entries, `watch_confirm_terms`, `watch_area_terms` |
+| the company watchlist | `[[watch]]` entries |
 | the shortlist view | `accepted_employment_types`, `graduate_programmes`, `score_threshold`, `require_commutable`, `danish_ok`, `hide_danish_ads` |
 | the deterministic extractors | `commutable_areas`, `skills_vocab` |
 | the brief handoff | the `brief_*` wording |
@@ -374,30 +374,53 @@ keyword boards never see, and the first you hear of a role is after it closed. T
 reads each company's careers page on **every run** (first, before the boards), and:
 
 - records every posting it lists in `job_market_data/watchlist_postings.csv`;
-- reads each **new** posting once and checks its location (below);
-- sends the in-location ones through the normal pipeline to be scored, skipping the keyword
-  gate: every posting at a watched company is wanted;
-- shows them in a **Watchlist** section at the top of `Weekly_Job_Matches.md`, whatever their
-  score or type (the score is still shown, for fit), tagged `🆕 NEW` for a week.
+- reads each **new** posting once and skips it only if its location is confidently outside your
+  `commutable_areas` (below);
+- sends the rest through the normal pipeline to be scored, skipping the keyword gate (so is
+  every job-board ad at a watched company): a role there is never lost before the scorer sees it;
+- lists the **matching** ones, by the same filters as any other role (score, type, commute,
+  Danish), in a **Companies you know** section at the top of `Weekly_Job_Matches.md`.
 
-A posting counts as open **while it is still listed on the careers page**, not by age. Roles at a
-watched company that come in from Jobindex / The Hub are shown there too.
+A careers-page posting counts as open **while it is still listed there** (until its deadline),
+not by age. Matching roles at a watched company that come in from Jobindex / The Hub join the
+section too, and age out like any board role.
 
-**Location.** `watch_confirm_terms` (e.g. the building's name and address) mean *confirmed*;
-`watch_area_terms` (e.g. Copenhagen) mean *shown, flagged "unconfirmed"*; anything else is
-hidden, and an ad that couldn't be read is shown as *location unknown* rather than dropped. The
-posting's own location field (`Location: Spain`, `Lokation: København Ø`) decides alone when it
-has one, and company boilerplate ("Founded in Copenhagen", "our Copenhagen HQ") doesn't count.
-Per company you can override the terms, or give a `location_regex` whose group 1 is the location
-(e.g. Dalux ends every ad with `Dalux | <office>`).
+**Location.** The posting's own location (the source's field, else a labelled line like
+`Location: Aarhus` / `Lokation: København Ø`, else the one Danish city the ad names) goes
+through the same commute check as every scored role. Only a confident "not commutable" skips
+scoring; anything uncertain, including an unreadable ad, is scored and the report's commute
+filter decides. A per-company `location_regex` (group 1 = the location) reads an office line the
+generic rules miss (e.g. Dalux ends every ad with `Dalux | <office>`).
 
-**Entries** live in the profile (they're personal). Each needs `name`, `url` (the page that lists
+**Events.** Recruiting events a careers page lists as postings (graduate nights, workshops,
+discovery days, mentor programmes) are recognised by title, location-checked, and listed
+unscored under **Events at companies you know**, with their sign-up deadline, until they're
+delisted or the deadline passes.
+
+**Deadlines.** The report opens with **⏰ Closing within 14 days** (`CLOSING_SOON_DAYS`):
+every shortlisted role with a stated deadline that close, by its number. The brief shows the
+days left next to the deadline.
+
+**Per company:** `danish_ok = true` keeps that company's Danish ads and Danish-required roles on
+the list (for a team that told you it works in English); `queries = ["..."]` adds Jobindex
+searches (e.g. the company name) for companies watched on the boards only.
+
+**Entries** live in the profile (they're personal). Each needs a `name`; an entry without a
+`url` is watched on the job boards only. A careers page needs `url` (the page that lists
 the jobs), `link_regex` (finds each posting in that page's source) and optionally
 `link_template` (builds the url from the regex groups), `render = "browser"` for pages that
 build their list with JavaScript, and `aliases` (how job boards spell the company). Most boards
 fit one of a few shapes: plain links on the company site, an HR-ON list (`show-job/<id>`), an
 Emply board (`/ad/<slug>/<id>`), a sitemap filtered by the regex, or a JSON service (Nexi's
 Oracle one). Check a new entry with a dry run before relying on it; `watchlist.py` has the format.
+
+Three careers platforms have public JSON APIs and get a typed `source` instead of a regex:
+`workday` (POST listing filtered by location facet ids; the detail's `endDate` is the deadline,
+its `startDate` is only the posting date), `smartrecruiters` (filtered by `country`) and
+`hrmanager` (one call with the ad text; a shared tenant such as the state's recruiting
+solution is narrowed by `departments`). Their location and deadline fields are used directly;
+the deadline is written into the ad text the scorer and the expiry gate read, so it wins over
+year-less prose like "Ansøgningsfrist: 18. oktober".
 
 `python a_scrape.py --watch` runs only the watchlist (score the new postings, rebuild the report)
 for a quick check between daily runs. The first run reads every current posting once (a few

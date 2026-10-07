@@ -603,6 +603,14 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
     if str(meta.get("ad_language", "")).lower() == "da":
         danish_line += " · ad written in Danish"
     today = datetime.now().strftime("%Y-%m-%d")
+    dl = core._parse_date(meta.get("deadline"))
+    if dl:
+        left = (dl - datetime.now().date()).days
+        deadline_line = (f"{dl.isoformat()} · "
+                         + ("passed" if left < 0 else "⏰ closes today" if left == 0
+                            else f"⏰ {left}d left" if left <= 7 else f"{left}d left"))
+    else:
+        deadline_line = meta.get("deadline", "") or "—"
 
     if description.strip():
         jd_block = description.strip()
@@ -625,7 +633,7 @@ def _build_brief(meta: dict, tf: dict, description: str, fetch_err) -> str:
 - **Title:** {meta.get('title', '')}
 - **Location:** {meta.get('location', '') or '—'}
 - **Type:** {meta.get('employment_type', '') or '—'} · **Work mode:** {meta.get('work_mode', '') or '—'}
-- **Deadline:** {meta.get('deadline', '') or '—'}
+- **Deadline:** {deadline_line}
 - **Danish:** {danish_line}
 - **URL:** {meta.get('url', '')}
 {score_line}{matched_line}

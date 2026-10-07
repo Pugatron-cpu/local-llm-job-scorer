@@ -65,13 +65,27 @@ def extract_employment_type(title: str, description: str) -> str:
 # Graduate programmes / trainee intakes. NOT an employment_type: they are full-time roles and
 # the scorer (whose enum is pinned by the golden prompt test) correctly calls them full_time.
 # This is a separate TITLE-only flag the shortlist uses to give them their own section, so it
-# needs no archive column and applies to already-scored rows. \b keeps "undergraduate" out.
-_GRADUATE_RE = re.compile(r"\b(?:graduates?|trainees?|early[\s-]careers?)\b")
+# needs no archive column and applies to already-scored rows. The lookbehinds keep
+# "undergraduate" / "postgraduate" out while letting Danish compounds in ("revisorgraduate").
+# Firms brand intakes differently (2026-10, real titles): "KPMG Advisory Academy 2027",
+# "KPMG TechAcademy 2027", "Finance Consultancy Programme", "Nyuddannet ...", and EY's
+# "Analyst - Transaction Diligence | Autumn 2027" (an intake season + year in the title).
+_GRADUATE_RE = re.compile(
+    r"(?<!under)(?<!post)graduates?\b|\btrainees?\b|\bearly[\s-]careers?\b"
+    r"|academy\s+20\d\d\b"           # an intake, not an org ("Danish Data Science Academy")
+    r"|\b(?:graduate|trainee|consultancy|career|talent|development)\s+program(?:me)?s?\b"
+    r"|\bnyuddanne(?:t|de)\b|\bdimittend")
+# An intake season + year names a graduate start only when the title isn't a student/intern
+# role: "Student Teaching Assistant (Fall 2026)" is a term, not an intake.
+_INTAKE_RE = re.compile(r"\b(?:autumn|fall|august|september)\s+20\d\d\b")
+_NOT_INTAKE_RE = re.compile(r"student|intern|praktik|assistant|medhjælper|medarbejder")
 
 
 def is_graduate_programme(title: str) -> bool:
     """True if the TITLE names a graduate programme / trainee / early-career intake."""
-    return bool(_GRADUATE_RE.search((title or "").lower()))
+    t = (title or "").lower()
+    return bool(_GRADUATE_RE.search(t)
+                or (_INTAKE_RE.search(t) and not _NOT_INTAKE_RE.search(t)))
 
 # ---------------------------------------------------------------------------
 # WORK MODE
@@ -140,6 +154,11 @@ _KNOWN_CITIES = {
     "Hillerød":       ("hillerød", "hillerod"),
     "Helsingør":      ("helsingør", "helsingor"),
     "Birkerød":       ("birkerød", "birkerod"),
+    "Allerød":        ("allerød", "allerod"),
+    "Hørsholm":       ("hørsholm", "horsholm"),
+    "Rungsted":       ("rungsted",),
+    "Kokkedal":       ("kokkedal",),
+    "Humlebæk":       ("humlebæk", "humlebaek"),
     "Farum":          ("farum",),
     "Køge":           ("køge", "koge"),
     "Næstved":        ("næstved", "naestved"),
