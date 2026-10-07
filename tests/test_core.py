@@ -300,6 +300,13 @@ class ShortlistRejectReason(unittest.TestCase):
         finally:
             extractors.config.COMMUTABLE_AREAS = orig
 
+    def test_danish_ad_with_an_english_version_is_not_hidden(self):
+        da = dict(ad_language="da")
+        self.assertEqual(core.shortlist_reject_reason(self._row(title="Studentermedhjælper", **da)),
+                         "ad written in Danish (hidden by filter)")
+        self.assertIsNone(core.shortlist_reject_reason(self._row(
+            title="Bliv Graduate i PwC Consulting (English below)", **da)))
+
     def test_track_b_below_its_bar(self):
         # Track B at 78 clears SCORE_THRESHOLD (75) but not TRACK_B_MIN_SCORE (80).
         reason = core.shortlist_reject_reason(self._row(score="78", track="B"))

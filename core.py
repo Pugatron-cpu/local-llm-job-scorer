@@ -1534,6 +1534,11 @@ def _careers_listed(r: dict):
     return st.get("last_seen", "") >= checked
 
 
+# A Danish-first ad that carries an English version says so in its title ("Bliv graduate i PwC
+# ... (English below)"); the detected language is Danish, but the ad is readable in English.
+_ENGLISH_VERSION_RE = re.compile(r"english\s+(?:below|version|further down)|see english", re.I)
+
+
 def _type_targeted(r: dict) -> bool:
     """Employment-type view filter: an accepted type, or an opted-in graduate programme
     (which is full-time by nature, hence the separate route)."""
@@ -1573,7 +1578,8 @@ def shortlist_reject_reason(r: dict, today=None):
     if EXCLUDE_DANISH_REQUIRED and not danish_ok \
             and str(r.get("danish_level", "")).lower() == "required":
         return "danish required (hidden by filter)"
-    if EXCLUDE_DANISH_ADS and not danish_ok and str(r.get("ad_language", "")).lower() == "da":
+    if EXCLUDE_DANISH_ADS and not danish_ok and str(r.get("ad_language", "")).lower() == "da" \
+            and not _ENGLISH_VERSION_RE.search(r.get("title", "")):
         return "ad written in Danish (hidden by filter)"
     if r.get("track") == "B" and score < TRACK_B_MIN_SCORE:
         return f"track B below its own bar ({TRACK_B_MIN_SCORE})"
