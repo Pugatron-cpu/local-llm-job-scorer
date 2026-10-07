@@ -1583,7 +1583,13 @@ def shortlist_reject_reason(r: dict, today=None):
         return "score below threshold"
     if not _type_targeted(r):
         return "employment type not targeted"
-    if REQUIRE_COMMUTABLE and str(r.get("commute_ok", "true")).lower() == "false":
+    # Commute is re-derived from the stored location with the CURRENT commutable_areas, so a
+    # profile's commute list applies to rows scored before it changed; the stored flag (the
+    # LLM's verdict) only decides when the location isn't recognised.
+    commute = extractors.commute_ok(r.get("location", ""))
+    if commute is None:
+        commute = str(r.get("commute_ok", "true")).lower() != "false"
+    if REQUIRE_COMMUTABLE and not commute:
         return "not commutable"
     if EXCLUDE_DANISH_REQUIRED and str(r.get("danish_level", "")).lower() == "required":
         return "danish required (hidden by filter)"

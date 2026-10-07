@@ -282,6 +282,24 @@ class ShortlistRejectReason(unittest.TestCase):
             core.GRADUATE_PROGRAMMES = orig
             os.remove(path)
 
+    def test_commute_follows_the_current_area_list_not_the_stored_flag(self):
+        # Scored when Humlebæk wasn't commutable (stored false); the profile now lists it.
+        import extractors
+        orig = extractors.config.COMMUTABLE_AREAS
+        try:
+            extractors.config.COMMUTABLE_AREAS = {"copenhagen", "humlebæk"}
+            self.assertIsNone(core.shortlist_reject_reason(
+                self._row(location="Humlebæk", commute_ok="false")))
+            # a recognised city outside the list is hidden whatever the stored flag says
+            self.assertEqual(core.shortlist_reject_reason(
+                self._row(location="Aarhus", commute_ok="true")), "not commutable")
+            # unrecognised location: the stored (LLM) verdict stands
+            self.assertEqual(core.shortlist_reject_reason(
+                self._row(location="Nordsjælland", commute_ok="false")),
+                "not commutable")
+        finally:
+            extractors.config.COMMUTABLE_AREAS = orig
+
     def test_track_b_below_its_bar(self):
         # Track B at 78 clears SCORE_THRESHOLD (75) but not TRACK_B_MIN_SCORE (80).
         reason = core.shortlist_reject_reason(self._row(score="78", track="B"))
