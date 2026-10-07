@@ -392,6 +392,15 @@ scoring; anything uncertain, including an unreadable ad, is scored and the repor
 filter decides. A per-company `location_regex` (group 1 = the location) reads an office line the
 generic rules miss (e.g. Dalux ends every ad with `Dalux | <office>`).
 
+**Events.** Recruiting events a careers page lists as postings (graduate nights, workshops,
+discovery days, mentor programmes) are recognised by title, location-checked, and listed
+unscored under **Events at companies you know**, with their sign-up deadline, until they're
+delisted or the deadline passes.
+
+**Deadlines.** The report opens with **⏰ Closing within 14 days** (`CLOSING_SOON_DAYS`):
+every shortlisted role with a stated deadline that close, by its number. The brief shows the
+days left next to the deadline.
+
 **Per company:** `danish_ok = true` keeps that company's Danish ads and Danish-required roles on
 the list (for a team that told you it works in English); `queries = ["..."]` adds Jobindex
 searches (e.g. the company name) for companies watched on the boards only.

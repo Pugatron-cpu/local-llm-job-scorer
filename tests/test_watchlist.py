@@ -131,6 +131,41 @@ class TypedSources(unittest.TestCase):
                              ("T", "Ad", "København", ""))
 
 
+class Events(unittest.TestCase):
+    def test_event_titles(self):
+        for t in ("Deloitte SAP Graduate Night CPH — November 3rd",
+                  "Launch your career as a Business Tech Consultant - join our Discovery Day!",
+                  "Mentor Programme 2027 | Deloitte's Consulting Practice | CPH",
+                  "Step Inside Accenture: An Evening for IT Students",
+                  "CV Workshop: Get Your CV Ready for Accenture's Graduate Hiring Round"):
+            self.assertTrue(watchlist.is_event(t), t)
+        for t in ("Event Manager til PwC", "Night shift operator", "AI & Data Engineer",
+                  "Vagthavende til Trafikinformationen"):
+            self.assertFalse(watchlist.is_event(t), t)
+
+    def test_open_events(self):
+        today = "2026-10-07"
+        state = {
+            watchlist.check_key("Deloitte"): {"company": "Deloitte", "last_seen": today},
+            "a": {"url": "a", "company": "Deloitte", "kind": "event", "location_status": "ok",
+                  "deadline": "2026-11-03", "last_seen": today},
+            "b": {"url": "b", "company": "Deloitte", "kind": "event", "location_status": "ok",
+                  "deadline": "", "last_seen": today},
+            "c": {"url": "c", "company": "Deloitte", "kind": "event", "location_status": "ok",
+                  "deadline": "2026-10-20", "last_seen": today},
+            "gone": {"url": "gone", "company": "Deloitte", "kind": "event",
+                     "location_status": "ok", "last_seen": "2026-10-01"},
+            "past": {"url": "past", "company": "Deloitte", "kind": "event",
+                     "location_status": "ok", "deadline": "2026-10-06", "last_seen": today},
+            "aarhus": {"url": "aarhus", "company": "Deloitte", "kind": "event",
+                       "location_status": "elsewhere", "last_seen": today},
+            "job": {"url": "job", "company": "Deloitte", "kind": "", "location_status": "ok",
+                    "last_seen": today},
+        }
+        self.assertEqual([e["url"] for e in watchlist.open_events(state, today)],
+                         ["c", "a", "b"])
+
+
 class ExtractLinks(unittest.TestCase):
     def test_template_and_dedup(self):
         src = 'a show-job/105&locale=x b show-job/105 c show-job/206'
@@ -231,6 +266,34 @@ class WatchView(unittest.TestCase):
         r = self._row(url="https://z/1", company="Acme")
         self.assertIsNone(core.shortlist_reject_reason(r))
         self.assertEqual(r["_watch"], "")
+
+    def test_report_opens_with_closing_soon_and_events(self):
+        soon = (self.today + timedelta(days=5)).isoformat()
+        later = (self.today + timedelta(days=40)).isoformat()
+        rows = [self._row(url="https://z/1", company="Acme", title="Student BI", deadline=soon),
+                self._row(url="https://z/2", company="Acme", title="Student ML", deadline=later)]
+        state = watchlist.load_state(core.WATCH_STATE)
+        state["https://d/ev"] = {"url": "https://d/ev", "company": "Dalux", "kind": "event",
+                                 "title": "Graduate Night", "location_status": "ok",
+                                 "deadline": soon, "first_seen": self.today.isoformat(),
+                                 "last_seen": self.today.isoformat()}
+        watchlist.save_state(core.WATCH_STATE, state)
+        core._watch_cache["mtime"] = None
+        fd, path = tempfile.mkstemp(suffix=".csv", dir=self._dir)
+        os.close(fd)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=core.ARCHIVE_FIELDS)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") for k in core.ARCHIVE_FIELDS})
+        report = os.path.join(self._dir, "r.md")
+        core.write_report(report, path)
+        text = open(report, encoding="utf-8").read()
+        block = text.split("## ⏰ Closing within")[1].split("##")[0]
+        self.assertIn("**#1** Acme: Student BI · 5d left", block)
+        self.assertNotIn("Student ML", block)
+        self.assertIn("**Dalux**: [Graduate Night](https://d/ev) · sign up by", text)
+
 
     def test_watch_rows_sort_first(self):
         rows = [self._row(url="https://z/1", company="Acme", score="95"),

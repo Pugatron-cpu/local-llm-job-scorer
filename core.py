@@ -1626,6 +1626,40 @@ def open_shortlist(archive_path: str) -> list:
     return shortlist_with_reasons(archive_path)[0]
 
 
+def _write_closing_soon(f, matches):
+    """Every shortlisted role with a stated deadline within CLOSING_SOON_DAYS, soonest first,
+    by its shortlist number (graduate windows close; this is the list to act on first)."""
+    soon = sorted(((i, j) for i, j in enumerate(matches, 1)
+                   if j.get("_days_left") is not None and j["_days_left"] <= CLOSING_SOON_DAYS),
+                  key=lambda x: x[1]["_days_left"])
+    if not soon:
+        return
+    f.write(f"## ⏰ Closing within {CLOSING_SOON_DAYS} days ({len(soon)})\n\n")
+    for i, j in soon:
+        d = j["_days_left"]
+        f.write(f"- **#{i}** {j.get('company', '')}: {j.get('title', '')} · "
+                f"{'closes today' if d <= 0 else f'{d}d left'} ({j.get('deadline', '')[:10]})\n")
+    f.write("\n")
+
+
+def _write_events(f, today: str):
+    """Recruiting events listed on watched careers pages (not scored: listed for you to judge)."""
+    if not WATCHLIST:
+        return
+    events = watchlist.open_events(_watch_state()[0], today)
+    if not events:
+        return
+    f.write(f"## Events at companies you know ({len(events)})\n\n")
+    for e in events:
+        dl = e.get("deadline", "")
+        when = ""
+        if _parse_date(dl):
+            d = (_parse_date(dl) - datetime.now().date()).days
+            when = f" · sign up by {dl} ({'today' if d <= 0 else f'{d}d'})"
+        f.write(f"- **{e.get('company', '')}**: [{e.get('title', '')}]({e['url']}){when}\n")
+    f.write("\n")
+
+
 def write_report(report_path: str, archive_path: str):
     """Rebuild the report fresh from the full archive each run, showing only roles that are
     likely STILL OPEN (deadline not passed; or, lacking a deadline, seen within
@@ -1642,6 +1676,8 @@ def write_report(report_path: str, archive_path: str):
                 f"(score >= {SCORE_THRESHOLD}, types: {', '.join(sorted(ACCEPTED_EMPLOYMENT_TYPES))})\n\n")
         f.write("Run `python c_prepare.py <number>` to prep one for Claude (e.g. "
                 "`c_prepare.py 1`).\n\n")
+        _write_closing_soon(f, matches)
+        _write_events(f, today)
         n_grad = sum(1 for j in matches if j.get("_graduate") and not j.get("_watch"))
         n_watch = sum(1 for j in matches if j.get("_watch"))
         for i, j in enumerate(matches, 1):

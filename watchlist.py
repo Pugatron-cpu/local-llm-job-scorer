@@ -48,8 +48,8 @@ import requests
 
 import extractors
 
-STATE_FIELDS = ["url", "company", "title", "location_status", "location_hint", "deadline",
-                "first_seen", "last_seen"]
+STATE_FIELDS = ["url", "company", "title", "kind", "location_status", "location_hint",
+                "deadline", "first_seen", "last_seen"]
 
 # Location verdicts, judged once per posting before scoring. ELSEWHERE (confidently outside
 # the commutable areas) is not scored; OK is, and the report's commute filter has the last word.
@@ -64,6 +64,29 @@ _HEADERS = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 # Postings that aren't jobs: the open-application / talent-pool entries most boards list.
 _NOT_A_JOB_RE = re.compile(r"unsolicited|uopfordret|talent\s*pool|spontaneous|open application",
                            re.I)
+
+# Recruiting events listed as postings (real titles, 2026-10: "Deloitte SAP Graduate Night CPH",
+# "CV Workshop: Get Your CV Ready ...", "Step Inside Accenture: An Evening for IT Students",
+# "Mentor Programme 2027"). Not scored (the job rubric means nothing for them); the report lists
+# them with their sign-up deadline. Kept as kind="event" in the state file.
+EVENT = "event"
+# Unambiguous event phrases count alone; ambiguous words ("event", "night") only when the title
+# names no job ("Event Manager", "Night shift operator" are jobs).
+_EVENT_RE = re.compile(
+    r"\b(?:dinner|workshop|webinar|discovery\s+day|open\s+house|insight\s+day|career\s+day"
+    r"|info(?:rmation)?\s+(?:session|meeting)|case\s+(?:competition|day|night)|hackathon"
+    r"|mentor\s+programme|step\s+inside)\b", re.I)
+_EVENT_WEAK_RE = re.compile(r"\b(?:events?|night|evening|breakfast|arrangement)\b", re.I)
+_JOB_WORD_RE = re.compile(
+    r"\b(?:manager|coordinator|koordinator|planner|shift|vagt|operator|assistant|assistent"
+    r"|developer|udvikler|engineer|ingeniør|konsulent|consultant|specialist|medarbejder"
+    r"|analyst|analytiker|lead|leder|chef|director)\b", re.I)
+
+
+def is_event(title: str) -> bool:
+    t = title or ""
+    return bool(_EVENT_RE.search(t)
+                or (_EVENT_WEAK_RE.search(t) and not _JOB_WORD_RE.search(t)))
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +178,21 @@ def save_state(path: str, state: dict):
         for r in state.values():
             w.writerow({k: r.get(k, "") for k in STATE_FIELDS})
     os.replace(tmp, path)            # never leave a half-written state file
+
+
+def open_events(state: dict, today: str) -> list:
+    """Events still listed on their careers page, in a commutable place, whose sign-up
+    deadline (if any) hasn't passed: soonest deadline first, undated last."""
+    out = []
+    for r in state.values():
+        if r.get("kind") != EVENT or r.get("location_status") == ELSEWHERE:
+            continue
+        checked = state.get(check_key(r.get("company", "")), {}).get("last_seen", "")
+        if r.get("last_seen", "") < checked or (r.get("deadline") and r["deadline"] < today):
+            continue
+        out.append(r)
+    return sorted(out, key=lambda r: (not r.get("deadline"), r.get("deadline", ""),
+                                      r.get("company", "")))
 
 
 def check_key(company: str) -> str:
@@ -454,11 +492,13 @@ def scrape(watchlist, state_path, archived_urls, canon, log, timeout_s: int = 45
                         state[url] = st
                         new += 1
                     st.update(title=title or st.get("title", ""), location_status=status,
-                              location_hint=hint, deadline=deadline)
+                              location_hint=hint, deadline=deadline,
+                              kind=EVENT if is_event(title or st.get("title", "")) else "")
                     time.sleep(random.uniform(0.8, 1.6))    # polite
                 st["last_seen"] = today
-                if st["location_status"] == ELSEWHERE or _NOT_A_JOB_RE.search(st["title"]):
-                    continue
+                if st["location_status"] == ELSEWHERE or _NOT_A_JOB_RE.search(st["title"]) \
+                        or st.get("kind") == EVENT:
+                    continue                  # events are listed from the state, not scored
                 if canon(url) in archived_urls:
                     continue              # already scored; shown from the archive
                 if body is None:          # seen before but never scored (e.g. score error)
