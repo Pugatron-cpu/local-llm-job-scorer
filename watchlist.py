@@ -80,7 +80,8 @@ _EVENT_WEAK_RE = re.compile(r"\b(?:events?|night|evening|breakfast|arrangement)\
 _JOB_WORD_RE = re.compile(
     r"\b(?:manager|coordinator|koordinator|planner|shift|vagt|operator|assistant|assistent"
     r"|developer|udvikler|engineer|ingeniør|konsulent|consultant|specialist|medarbejder"
-    r"|analyst|analytiker|lead|leder|chef|director)\b", re.I)
+    r"|analyst|analytiker|lead|leder|chef|director|praktikant|intern|trainee"
+    r"|studentermedhjælper)\b", re.I)
 
 
 def is_event(title: str) -> bool:

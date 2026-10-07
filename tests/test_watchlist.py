@@ -137,9 +137,11 @@ class Events(unittest.TestCase):
                   "Launch your career as a Business Tech Consultant - join our Discovery Day!",
                   "Mentor Programme 2027 | Deloitte's Consulting Practice | CPH",
                   "Step Inside Accenture: An Evening for IT Students",
+                  "Student Event: Join Our Digital Transformation Programme",
                   "CV Workshop: Get Your CV Ready for Accenture's Graduate Hiring Round"):
             self.assertTrue(watchlist.is_event(t), t)
         for t in ("Event Manager til PwC", "Night shift operator", "AI & Data Engineer",
+                  "Drømmer du om at arbejde med events? Bliv Employer Branding-praktikant i PwC",
                   "Vagthavende til Trafikinformationen"):
             self.assertFalse(watchlist.is_event(t), t)
 
