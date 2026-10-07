@@ -10,6 +10,7 @@ import csv
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +58,77 @@ class LocationStatus(unittest.TestCase):
                          watchlist.ELSEWHERE)
         self.assertEqual(self.st("Some text.\nDalux | København Ø", location_regex=rx),
                          watchlist.OK)
+
+
+class TypedSources(unittest.TestCase):
+    """The careers-site API adapters, against the response shapes recorded 2026-10-07."""
+
+    class _Resp:
+        def __init__(self, data):
+            self._d = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._d
+
+    def test_ms_date(self):
+        self.assertEqual(watchlist.ms_date("/Date(1794783599000+0100)/"), "2026-11-15")
+        self.assertEqual(watchlist.ms_date("/Date(-62135596800000)/"), "")   # 'not set'
+        self.assertEqual(watchlist.ms_date(""), "")
+
+    def test_structured_deadline_reaches_the_shared_parser(self):
+        import extractors
+        body = watchlist.with_deadline("Ansøgningsfrist: 18. oktober", "2026-10-19")
+        self.assertEqual(extractors.extract_deadline(body), "2026-10-19")
+        self.assertEqual(watchlist.with_deadline("text", ""), "text")
+
+    def test_hrmanager_filters_a_shared_tenant_by_department(self):
+        items = [{"Name": "Studentermedhjælper til SAP", "AdvertisementUrl": "https://h/1",
+                  "Department": {"Id": 19779}, "PositionLocation": {"Name": "København"},
+                  "ApplicationDue": "/Date(1792792799000+0200)/",
+                  "Advertisements": [{"Content": "<p>Om jobbet</p>"}]},
+                 {"Name": "Other agency", "AdvertisementUrl": "https://h/2",
+                  "Department": {"Id": 1}, "Advertisements": []}]
+        with unittest.mock.patch.object(watchlist.requests, "get",
+                                        return_value=self._Resp({"Items": items})):
+            out = watchlist._hrmanager_list({"customer": "x", "departments": [19779]}, 5)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["location"], "København")
+        self.assertEqual(out[0]["deadline"], "2026-10-23")   # 23:59:59 +02:00
+        self.assertEqual(out[0]["body"], "Om jobbet")
+
+    def test_workday_pages_past_a_zero_total_on_later_pages(self):
+        def page(n, total):
+            return self._Resp({"total": total, "jobPostings": [
+                {"title": f"t{n}{i}", "externalPath": f"/job/Copenhagen/x_{n}{i}"}
+                for i in range(20 if n < 2 else 3)]})
+        pages = [page(0, 43), page(1, 0), page(2, 0)]     # Workday sends total once
+        with unittest.mock.patch.object(watchlist.requests, "post", side_effect=pages):
+            out = watchlist._workday_list({"host": "h", "tenant": "t", "sites": ["S"]}, 5)
+        self.assertEqual(len(out), 43)
+        self.assertEqual(out[0]["url"], "https://h/S/job/Copenhagen/x_00")
+        self.assertEqual(out[0]["_detail"], "https://h/wday/cxs/t/S/job/Copenhagen/x_00")
+
+    def test_workday_detail_uses_end_date_not_start_date(self):
+        info = {"jobPostingInfo": {"title": "Graduate", "jobDescription": "<p>Start 1. sep</p>",
+                                   "location": "Copenhagen", "startDate": "2026-10-06",
+                                   "endDate": "2026-10-19"}}
+        with unittest.mock.patch.object(watchlist.requests, "get", return_value=self._Resp(info)):
+            self.assertEqual(watchlist._workday_detail("u", 5),
+                             ("Graduate", "Start 1. sep", "Copenhagen", "2026-10-19"))
+
+    def test_read_posting_prefers_the_list_then_the_api(self):
+        p = {"url": "u", "title": "T", "body": "B", "location": "L", "deadline": "2026-01-01"}
+        self.assertEqual(watchlist.read_posting({}, p, None, 5), ("T", "B", "L", "2026-01-01"))
+        entry = {"source": "smartrecruiters"}
+        with unittest.mock.patch.dict(watchlist._DETAILS, {"smartrecruiters":
+                                                           lambda u, t: ("", "Ad", "", "")}):
+            self.assertEqual(watchlist.read_posting(entry, {"url": "u", "title": "T",
+                                                            "location": "København",
+                                                            "_detail": "d"}, None, 5),
+                             ("T", "Ad", "København", ""))
 
 
 class ExtractLinks(unittest.TestCase):

@@ -405,6 +405,14 @@ fit one of a few shapes: plain links on the company site, an HR-ON list (`show-j
 Emply board (`/ad/<slug>/<id>`), a sitemap filtered by the regex, or a JSON service (Nexi's
 Oracle one). Check a new entry with a dry run before relying on it; `watchlist.py` has the format.
 
+Three careers platforms have public JSON APIs and get a typed `source` instead of a regex:
+`workday` (POST listing filtered by location facet ids; the detail's `endDate` is the deadline,
+its `startDate` is only the posting date), `smartrecruiters` (filtered by `country`) and
+`hrmanager` (one call with the ad text; a shared tenant such as the state's recruiting
+solution is narrowed by `departments`). Their location and deadline fields are used directly;
+the deadline is written into the ad text the scorer and the expiry gate read, so it wins over
+year-less prose like "Ansøgningsfrist: 18. oktober".
+
 `python a_scrape.py --watch` runs only the watchlist (score the new postings, rebuild the report)
 for a quick check between daily runs. The first run reads every current posting once (a few
 minutes for a big board); after that only new ones are read. Deleting `watchlist_postings.csv`
