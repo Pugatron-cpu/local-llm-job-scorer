@@ -707,8 +707,8 @@ def scrape_watch(cutoff_date):
     """Source adapter for the company watchlist (watchlist.py). Ignores cutoff_date on
     purpose: a posting still listed on the careers page is open, however old it is."""
     log.info(f"--- [watch] {len(WATCHLIST)} companies ---")
-    yield from watchlist.scrape(WATCHLIST, WATCH_STATE, WATCH_CONFIRM_TERMS, WATCH_AREA_TERMS,
-                                load_seen_urls(MASTER_ARCHIVE), canonical_url, log)
+    yield from watchlist.scrape(WATCHLIST, WATCH_STATE, load_seen_urls(MASTER_ARCHIVE),
+                                canonical_url, log)
 
 
 # `a_scrape.py --watch` sets this: run the watchlist source only (a quick daytime check).
@@ -1499,11 +1499,7 @@ def _fresh_days(r: dict):
     return GRADUATE_FRESH_DAYS if _is_graduate_row(r) else REPORT_FRESH_DAYS
 
 
-_watch_cache = {"mtime": None, "state": {}, "by_canon": {}, "by_title": {}}
-
-
-def _title_key(company: str, title: str) -> tuple:
-    return (company, re.sub(r"\W+", " ", (title or "").lower()).strip())
+_watch_cache = {"mtime": None, "state": {}, "by_canon": {}}
 
 
 def _watch_state():
@@ -1515,46 +1511,27 @@ def _watch_state():
     if _watch_cache["mtime"] != mtime:
         st = watchlist.load_state(WATCH_STATE)
         _watch_cache.update(mtime=mtime, state=st,
-                            by_canon={canonical_url(u): r for u, r in st.items()},
-                            by_title={_title_key(r.get("company", ""), r.get("title", "")): r
-                                      for u, r in st.items() if r.get("title")})
+                            by_canon={canonical_url(u): r for u, r in st.items()})
     return _watch_cache["state"], _watch_cache["by_canon"]
 
 
-def _watch_view(r: dict, today):
-    """Watchlist visibility for one archive row. None = not a watched company (or a board
-    row outside the location): the normal filters decide. Otherwise a reason string to hide
-    it, or "" to show it in the Watchlist section (sets r['_watch*'] and r['_days_left']).
-    Watched rows skip the score/type/commute/Danish filters: every posting is wanted."""
+def watch_entry(company: str):
+    """The [[watch]] entry whose aliases name this company, or None."""
+    return next((w for w in WATCHLIST
+                 if watchlist.company_matches(company or "", w["aliases"])), None)
+
+
+def _careers_listed(r: dict):
+    """True/False = read from a watched careers page and still listed there / delisted since.
+    None = not a careers-page row (a board row, or no watchlist): judged on its age as usual."""
     if not WATCHLIST:
-        return None
-    entry = next((w for w in WATCHLIST
-                  if watchlist.company_matches(r.get("company", ""), w["aliases"])), None)
-    if entry is None:
         return None
     state, by_canon = _watch_state()
     st = by_canon.get(canonical_url(r.get("url", "")))
-    if st is not None:                                   # read from the careers page itself
-        checked = state.get(watchlist.check_key(st.get("company", "")), {}).get("last_seen", "")
-        if st.get("last_seen", "") < checked:
-            return "no longer listed on the careers page"
-        status, first_seen, days_left = st.get("location_status", ""), st.get("first_seen", ""), None
-    else:                                                # found on a job board
-        twin = _watch_cache["by_title"].get(_title_key(entry["name"], r.get("title", "")))
-        status, _ = (twin["location_status"], "") if twin else watchlist.location_status(
-            r.get("location", "") if str(r.get("location", "")).upper() != "N/A" else "",
-            entry.get("confirm_terms") or WATCH_CONFIRM_TERMS,
-            entry.get("area_terms") or WATCH_AREA_TERMS)
-        is_open, days_left = role_open_status(r, today)
-        if not is_open:
-            return "closed / aged out"
-        first_seen = r.get("scraped_date", "")
-    if status == watchlist.ELSEWHERE:
-        return None                   # not at the watched location: judge it like any role
-    seen_d = _parse_date(first_seen)
-    r.update(_watch=entry["name"], _watch_loc=status, _days_left=days_left, _graduate=False,
-             _watch_new=bool(seen_d and (today - seen_d).days <= WATCH_NEW_DAYS))
-    return ""
+    if st is None:
+        return None
+    checked = state.get(watchlist.check_key(st.get("company", "")), {}).get("last_seen", "")
+    return st.get("last_seen", "") >= checked
 
 
 def _type_targeted(r: dict) -> bool:
@@ -1571,10 +1548,11 @@ def shortlist_reject_reason(r: dict, today=None):
     count printed during a run matches Weekly_Job_Matches.md instead of over-counting on just
     score+type. On a qualifying row it sets r['_days_left'] for downstream sorting/display."""
     today = today or datetime.now().date()
-    r["_watch"] = ""
-    w = _watch_view(r, today)
-    if w is not None:
-        return w or None
+    entry = watch_entry(r.get("company", ""))
+    r["_watch"] = entry["name"] if entry else ""
+    listed = _careers_listed(r)
+    if listed is False:
+        return "no longer listed on the careers page"
     try:
         score = int(r.get("score") or 0)
     except (ValueError, TypeError):
@@ -1591,13 +1569,16 @@ def shortlist_reject_reason(r: dict, today=None):
         commute = str(r.get("commute_ok", "true")).lower() != "false"
     if REQUIRE_COMMUTABLE and not commute:
         return "not commutable"
-    if EXCLUDE_DANISH_REQUIRED and str(r.get("danish_level", "")).lower() == "required":
+    danish_ok = bool(entry and entry.get("danish_ok"))   # per company: "the team works in English"
+    if EXCLUDE_DANISH_REQUIRED and not danish_ok \
+            and str(r.get("danish_level", "")).lower() == "required":
         return "danish required (hidden by filter)"
-    if EXCLUDE_DANISH_ADS and str(r.get("ad_language", "")).lower() == "da":
+    if EXCLUDE_DANISH_ADS and not danish_ok and str(r.get("ad_language", "")).lower() == "da":
         return "ad written in Danish (hidden by filter)"
     if r.get("track") == "B" and score < TRACK_B_MIN_SCORE:
         return f"track B below its own bar ({TRACK_B_MIN_SCORE})"
-    is_open, days_left = role_open_status(r, today, _fresh_days(r))
+    # Still listed on its careers page = open until its deadline, however long ago first seen.
+    is_open, days_left = role_open_status(r, today, 10 ** 6 if listed else _fresh_days(r))
     if not is_open:
         return "closed / aged out"
     r["_days_left"] = days_left
@@ -1621,11 +1602,11 @@ def shortlist_with_reasons(archive_path: str):
             continue
         kept.append(r)
 
-    # graduate programmes last (their own report section), then urgency (known deadline,
-    # soonest), then score. The ORDER is the numbering c_prepare uses, so it lives here.
-    # Watchlist first: those are the companies you have a way in to.
+    # Companies you know first, then the main list, then graduate programmes (their own report
+    # section), each by urgency (known deadline, soonest), then score. The ORDER is the
+    # numbering c_prepare uses, so it lives here.
     kept.sort(key=lambda r: (not r["_watch"],
-                             r["_graduate"],
+                             r["_graduate"] and not r["_watch"],   # watched: by urgency only
                              r["_days_left"] is None,
                              r["_days_left"] if r["_days_left"] is not None else 0,
                              -int(r.get("score") or 0)))
@@ -1655,17 +1636,19 @@ def write_report(report_path: str, archive_path: str):
                 f"(score >= {SCORE_THRESHOLD}, types: {', '.join(sorted(ACCEPTED_EMPLOYMENT_TYPES))})\n\n")
         f.write("Run `python c_prepare.py <number>` to prep one for Claude (e.g. "
                 "`c_prepare.py 1`).\n\n")
-        n_grad = sum(1 for j in matches if j.get("_graduate"))
+        n_grad = sum(1 for j in matches if j.get("_graduate") and not j.get("_watch"))
         n_watch = sum(1 for j in matches if j.get("_watch"))
         for i, j in enumerate(matches, 1):
-            if j.get("_watch") and i == 1:
-                f.write(f"## Watchlist ({n_watch})\n\n"
-                        "Every open posting at a watched company, whatever its score or type "
-                        "(the score is still shown, for fit).\n\n")
+            prev = matches[i - 2] if i > 1 else None
+            if j.get("_watch") and prev is None:
+                f.write(f"## Companies you know ({n_watch})\n\n"
+                        "Matching roles at the companies on your watchlist (their careers "
+                        "pages are read directly).\n\n")
             if n_watch and not j.get("_watch") and not j.get("_graduate") \
-                    and matches[i - 2].get("_watch"):
+                    and prev is not None and prev.get("_watch"):
                 f.write("## Shortlist\n\n")
-            if j.get("_graduate") and (i == 1 or not matches[i - 2].get("_graduate")):
+            if j.get("_graduate") and not j.get("_watch") \
+                    and (prev is None or prev.get("_watch") or not prev.get("_graduate")):
                 f.write(f"## Graduate programmes ({n_grad})\n\n"
                         "Full-time intakes, shown because the profile sets "
                         "`graduate_programmes = true`. Check the start date: the scorer "
@@ -1676,13 +1659,8 @@ def write_report(report_path: str, archive_path: str):
 
             # metadata line: employment type / work mode / Danish flag / deadline
             meta = []
-            if j.get("_watch"):
-                if j.get("_watch_new"):
-                    meta.append("🆕 NEW")
-                meta.append({watchlist.CONFIRMED: "📍 location confirmed",
-                             watchlist.AREA: "⚠ location unconfirmed (check the ad)",
-                             watchlist.UNKNOWN: "⚠ location unknown (ad unreadable)",
-                             }.get(j.get("_watch_loc"), "⚠ location unknown"))
+            if j.get("_watch") and j.get("_graduate"):
+                meta.append("🎓 graduate programme")
             et = j.get("employment_type", "")
             if et and et != "unknown":
                 meta.append(et)
@@ -1881,8 +1859,8 @@ def main():
     # it's seen (including the ones about to be dropped). Same function Stage 2 uses below — one
     # definition, so the logged verdict can never drift from the real one.
     def _keep_candidate(j):
-        if j.get("source_site") == "watch":
-            return True   # a watched company: every posting is wanted, keywords or not
+        if j.get("source_site") == "watch" or watch_entry(j.get("company", "")):
+            return True   # a watched company: score every posting, keywords or not
         if j.get("source_site") == "thehub":
             title = f" {j['title']} ".lower()
             if any(term in title for term in EXCLUDE_TERMS):

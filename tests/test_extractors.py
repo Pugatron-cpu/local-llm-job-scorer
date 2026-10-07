@@ -84,12 +84,20 @@ class GraduateProgramme(unittest.TestCase):
     def test_graduate_titles(self):
         for t in ("Graduate - Data & Analytics | Autumn 2027", "IT Graduate Programme 2027",
                   "Monjasa søger IT Supporter trainee", "Early Career Python Developer",
-                  "Early-careers Data Analyst", "Graduates: AI & Business Systems"):
+                  "Early-careers Data Analyst", "Graduates: AI & Business Systems",
+                  # 2026-10 career-fair firms' real titles
+                  "AI Developer, NewTech - KPMG Advisory Academy 2027", "KPMG TechAcademy 2027",
+                  "Kickstart your Career with Deloitte's Finance Consultancy Programme",
+                  "Bliv revisorgraduate hos PwC Hellerup",
+                  "Nyuddannet geoteknisk ingeniør", "Analyst - Transaction Diligence | Autumn 2027"):
             self.assertTrue(extractors.is_graduate_programme(t), t)
 
     def test_non_graduate_titles(self):
         for t in ("Undergraduate Student Assistant", "Student Data Engineer", "Postgraduate",
-                  "Data Engineer", "", None):
+                  "Data Engineer", "Technical Programme Manager til at lede komplekse programmer",
+                  "Academic Work søger Student Assistant",
+                  "Student assistant at Danish Data Science Academy",
+                  "Student Teaching Assistant Position (Fall 2026)", "", None):
             self.assertFalse(extractors.is_graduate_programme(t), t)
 
 
