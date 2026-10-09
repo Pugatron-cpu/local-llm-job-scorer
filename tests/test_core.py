@@ -42,6 +42,17 @@ class CanonicalUrl(unittest.TestCase):
         u2 = core.canonical_url("https://hr-manager.net/apply?ProjectId=8")
         self.assertNotEqual(u1, u2)
 
+    def test_jobindex_ad_id_is_the_identity(self):
+        # same ad retitled by the employer -> new slug, same role
+        a = core.canonical_url("https://www.jobindex.dk/jobannonce/h1704392/graduate-consulting-august-2027")
+        b = core.canonical_url("https://www.jobindex.dk/jobannonce/h1704392/"
+                               "graduate-consulting-august-2027-copenhagen-aarhus")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, core.canonical_url("https://www.jobindex.dk/jobannonce/h1704393/x"))
+        # other hosts keep their full path
+        self.assertNotEqual(core.canonical_url("https://thehub.io/jobannonce/1/a"),
+                            core.canonical_url("https://thehub.io/jobannonce/1/b"))
+
     def test_non_url_passthrough(self):
         self.assertEqual(core.canonical_url("N/A"), "N/A")
         self.assertEqual(core.canonical_url(""), "")

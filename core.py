@@ -77,6 +77,9 @@ _TRACKING_PARAMS = {
 }
 
 
+_JOBINDEX_SLUG_RE = re.compile(r"^(/jobannonce/[^/]+)/.*$")
+
+
 def canonical_url(u: str) -> str:
     """Normalise a job URL into a stable identity key: force the scheme to https (so an http
     vs https variant of the same link collapses), lowercase host, drop a leading 'www.', drop
@@ -101,6 +104,11 @@ def canonical_url(u: str) -> str:
             if k.lower() not in _TRACKING_PARAMS]
     query = urlencode(sorted(kept))
     path = s.path.rstrip("/") or "/"
+    if host == "jobindex.dk":
+        # /jobannonce/<ad id>/<title slug>: the id is the ad, the slug follows the title, so an
+        # employer retitling the ad must not make it a second role (13 such ads by 2026-10).
+        # Trade-off: a retitled ad is now "seen" and keeps its first score (no re-score).
+        path = _JOBINDEX_SLUG_RE.sub(r"\1", path)
     return urlunsplit(("https", host, path, query, ""))   # scheme forced: identity key only
 
 
@@ -1043,6 +1051,14 @@ def ensure_model_available():
              f"({SCORE_WORKERS} score worker(s), num_ctx {NUM_CTX})")
 
 
+# Greedy decoding + a fixed seed, so identical input scores identically by construction rather
+# than by luck. Measured 2026-10 (12 ads x 3 runs, 4 workers): temperature 0.1 was ALREADY
+# repeatable, so this is insurance, not a fix. Score drift between runs (e.g. 65 -> 35) comes
+# from the input: the fetched ad text differs between fetches (page edits; a watched company's
+# API text vs its browser page).
+SCORE_SAMPLING = {"temperature": 0, "seed": 42}
+
+
 def score_job(job: dict, description: str, model: str | None = None) -> dict:
     """Score one job. `model` overrides config.MODEL for comparing candidate models on
     identical inputs; default (None) uses config.MODEL and behaviour is unchanged."""
@@ -1062,7 +1078,7 @@ def score_job(job: dict, description: str, model: str | None = None) -> dict:
         # 512 (was 400): headroom so a full object — reasoning + a populated matched_skills
         # array — can't get truncated mid-JSON into a parse failure (which drops the row and
         # forces a re-fetch+re-score next run). Still tiny next to the fetch cost.
-        "options": {"temperature": 0.1, "num_ctx": NUM_CTX, "num_predict": 512},
+        "options": {**SCORE_SAMPLING, "num_ctx": NUM_CTX, "num_predict": 512},
     }
     try:
         r = requests.post(OLLAMA_URL, json=payload, timeout=SCORE_TIMEOUT_S)
