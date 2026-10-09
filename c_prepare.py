@@ -708,6 +708,12 @@ def print_shortlist(only_new: bool = False):
                 {"company": r.get("company", ""), "title": r.get("title", "")}))
         kind = "new" if st is None else ("interested" if st == "interested" else st)
         items.append((i, r, kind))
+    # Display highest score first (soonest known deadline breaks ties). Only the print order
+    # changes: each row keeps its shortlist number, so `c_prepare.py <n>` still matches the report.
+    items.sort(key=lambda it: (-int(it[1].get("score") or 0),
+                               it[1].get("_days_left") is None,
+                               it[1].get("_days_left") or 0,
+                               it[0]))
     actionable = [it for it in items if it[2] in ("new", "interested")]
 
     if only_new:
