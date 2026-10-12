@@ -13,6 +13,10 @@ ads, scores them with the local LLM, appends to the archive
     python a_scrape.py --rescore-all # escape hatch: re-score ALL still-open shortlist rows
                                      # (not just flag-blank ones) — use after a model/prompt
                                      # change so the existing shortlist reflects it
+    python a_scrape.py --rescore-all 50
+                                     # same, from score 50 up instead of the threshold: after
+                                     # a rubric WIDENS what fits, so low old scores can rise.
+                                     # 40 rows per run; run again for the rest.
     python a_scrape.py --watch       # quick check: ONLY the company watchlist (profile
                                      # [[watch]] entries) -> score new postings + rebuild
                                      # the report. Skips Jobindex / The Hub.
@@ -34,7 +38,9 @@ from core import main, rescore_missing_flags, rescore_all
 
 if __name__ == "__main__":
     if "--rescore-all" in sys.argv:
-        rescore_all()
+        i = sys.argv.index("--rescore-all")
+        nxt = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+        rescore_all(min_score=int(nxt) if nxt.isdigit() else None)
     elif "--rescore" in sys.argv:
         rescore_missing_flags()
     else:

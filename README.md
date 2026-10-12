@@ -29,6 +29,7 @@ run them directly.
 python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
+python a_scrape.py --rescore-all 50   # same, from score 50 up: after a rubric WIDENS what fits
 python a_scrape.py --watch    # quick check of the company watchlist only (see below)
 python a_scrape.py --model-preset fallback  # score with another MODEL_PRESETS entry (see below)
 python b_insights.py          # funnel + score-vs-behaviour + market + skill demand

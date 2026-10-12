@@ -30,6 +30,7 @@ DESC = "We are hiring a student data engineer. Python, SQL, Azure."
 # consulting, ERP/CRM, AI adoption) and the audit/"consultant" guards. Scores before that date
 # were made with the old text. Same day, Track B was switched off in the owner profile, so the
 # intro says ONE kind of role and the Track B block (with its bridge sentence) is gone.
+# Later that day: technology risk / IT audit added as partial-overlap Track A.
 EXPECTED = f"""You are screening jobs for a candidate. Score the fit 0-100.
 There is ONE acceptable kind of role.
 
@@ -47,13 +48,17 @@ TRACK A — technical / data role (preferred):
     functional or technical consultant, business analyst, implementation, support.
   - AI adoption, digital transformation and automation roles at ANY employer, when the
     day-to-day work is introducing, building or supporting AI, automation or data tooling.
+  - technology risk / IT audit / IT controls / cyber-risk roles (student or graduate, Big 4
+    included): Track A, but PARTIAL overlap at best (60-84), since the work reviews systems
+    rather than builds them.
     85-100: technical role closely matching the skills/projects.
     60-84 : technical but only partial overlap, or borderline seniority.
   "Technical" means SOFTWARE/DATA/IT technical. A role in an unrelated engineering or
   science domain (mechanical, civil, electrical, chemical, construction, lab/clinical,
   pharma QA, finance/audit, legal) scores <= 35 UNLESS its day-to-day tasks are
   substantially programming, data or IT work matching the candidate's actual skills.
-  Audit, tax, deal and financial-advisory consulting is finance/audit, not tech consulting.
+  Audit, tax, deal and financial-advisory consulting is finance/audit, not tech consulting
+  (technology risk / IT audit, above, is the one exception).
   Do not award points for the word "engineer", "analyst" or "consultant" alone.
 
 Any HR, marketing, or sales role scores 0."""
