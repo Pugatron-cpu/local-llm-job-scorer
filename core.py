@@ -1814,7 +1814,6 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
     Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
     label = "--rescore-all" if force else "--rescore"
     ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
-    today = datetime.now().strftime("%Y-%m-%d")
     today_d = datetime.now().date()
     floor = SCORE_THRESHOLD if min_score is None else min_score
     stale = _rescore_candidates(_dedup_archive(MASTER_ARCHIVE), force, floor, today_d)
@@ -1828,6 +1827,42 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
         log.info(f"{label}: {len(stale)} rows to re-score; doing the first {limit} "
                  f"(run again for the rest).")
         stale = stale[:limit]
+    _rescore_rows(stale, label)
+
+
+def rescore_urls(urls):
+    """`python a_scrape.py --rescore-url <url> [<url> ...]`: re-score specific archived roles,
+    whatever their score or status. For the one role a floor can't reach (a rubric change that
+    should lift a 30) without re-scoring every other low row with it."""
+    ensure_model_available()
+    want = {canonical_url(u) for u in urls}
+    rows = [r for r in _dedup_archive(MASTER_ARCHIVE) if canonical_url(r.get("url", "")) in want]
+    missing = want - {canonical_url(r.get("url", "")) for r in rows}
+    for u in sorted(missing):
+        log.warning(f"--rescore-url: not in the archive, skipped: {u}")
+    if rows:
+        _rescore_rows(rows, "--rescore-url")
+
+
+# A re-fetch can come back as a 404, a cookie wall or a landing page once an ad is taken down
+# (or hidden behind consent). The model then says so and scores 0 — correctly, for the text it
+# got — but the 0 would SUPERSEDE a real score (latest wins). Matched on the model's own
+# reasoning, and only at score 0: checked against 83 zeros from one re-score pass, this caught
+# all 15 empty pages and none of the 68 genuine zeros (HR, sales, nursing, ...).
+_UNREADABLE_RE = re.compile(
+    r"\b404\b|page not found|not be found|could not be found|cookie"
+    r"|no (?:actual )?job (?:description|ad)|(?:description|advertisement|content) is missing"
+    r"|landing page|website navigation|navigation elements|error page|no job content", re.I)
+
+
+def _unreadable_page(res: dict) -> bool:
+    """True when a score describes the PAGE (no ad on it), not the role."""
+    return res.get("score") == 0 and bool(_UNREADABLE_RE.search(res.get("reasoning", "") or ""))
+
+
+def _rescore_rows(stale, label):
+    """Re-fetch + re-score `stale` archive rows and append the fresh rows (latest wins)."""
+    today = datetime.now().strftime("%Y-%m-%d")
     log.info(f"{label}: re-fetching + re-scoring {len(stale)} rows...")
 
     jobs = []
@@ -1851,6 +1886,9 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
             res = score_job(job, desc)
             if res["reasoning"] == "scoring error":
                 log.warning(f"  {label}: scoring failed, skipping {job['title']!r}")
+                continue
+            if _unreadable_page(res):     # keep the old score: this one is about the page
+                log.warning(f"  {label}: no ad on the fetched page, old score kept: {job['url']}")
                 continue
             job.update(res)
             # Same post-score deterministic merge as the main scoring path, so a re-scored

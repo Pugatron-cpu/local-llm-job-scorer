@@ -392,6 +392,22 @@ class RescoreCandidates(unittest.TestCase):
         self.assertEqual(self._pick(rows, force=False), ["blank"])
 
 
+class UnreadablePage(unittest.TestCase):
+    """A re-score whose page had no ad must not supersede the old score."""
+    def test_empty_page_zeros_are_caught(self):
+        for why in ["The provided text is a 404 error page from a job board.",
+                    "The provided text contains only cookie consent information.",
+                    "The job description is missing; only website navigation.",
+                    "The provided text is a generic university landing page."]:
+            self.assertTrue(core._unreadable_page({"score": 0, "reasoning": why}), why)
+
+    def test_genuine_zeros_and_nonzero_scores_are_kept(self):
+        for res in [{"score": 0, "reasoning": "This is an HR role, which is explicitly scored as 0."},
+                    {"score": 0, "reasoning": "The role is for a registered nurse (sygeplejerske)."},
+                    {"score": 35, "reasoning": "Mentions cookie consent tooling for a web team."}]:
+            self.assertFalse(core._unreadable_page(res), res)
+
+
 class RawTeaserLog(unittest.TestCase):
     def test_appending_to_old_schema_migrates_first(self):
         """raw_teasers.csv written before the analytics columns existed must be realigned
