@@ -1773,26 +1773,29 @@ def rescore_missing_flags(limit: int = 40):
     return _rescore_open(force=False, limit=limit)
 
 
-def rescore_all(limit: int = 40):
-    """Escape hatch (`python a_scrape.py --rescore-all`): re-score EVERY still-open
+def rescore_all(limit: int = 40, min_score: int = None):
+    """Escape hatch (`python a_scrape.py --rescore-all [min_score]`): re-score EVERY still-open
     shortlist-relevant row, not just the flag-blank ones. Use this after a model or prompt
     change — without it, roles that already carry danish_level / ad_language are frozen at
     their old scoring forever (rescore_missing_flags deliberately skips them). Same latest-wins
     supersede and per-invocation `limit` as --rescore; still scoped to OPEN roles, so a
-    rejected/closed role stays frozen (that's intentional — you decided on it already)."""
-    return _rescore_open(force=True, limit=limit)
+    rejected/closed role stays frozen (that's intentional — you decided on it already).
+
+    `min_score` lowers the floor below SCORE_THRESHOLD. Without it a rubric that WIDENS what
+    fits can never lift a row the old rubric scored low: it is below the threshold, so it is
+    never picked. `--rescore-all 50` re-scores open rows from 50 up."""
+    return _rescore_open(force=True, limit=limit, min_score=min_score)
 
 
-def _rescore_open(force: bool, limit: int):
-    """Shared worker for the two re-score modes. `force=False` only touches rows with missing
-    Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
-    label = "--rescore-all" if force else "--rescore"
-    ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_d = datetime.now().date()
-    stale = []
-    for r in _dedup_archive(MASTER_ARCHIVE):
-        if r["score"] < SCORE_THRESHOLD:
+def _rescore_candidates(rows, force: bool, min_score: int, today_d):
+    """Which archive rows a re-score pass picks (pure: no I/O, testable). Open, targeted rows
+    scoring >= min_score; `force=False` only those with missing Danish/ad-language flags.
+    Rows already re-scored TODAY are skipped, so the per-run `limit` really does move on to
+    the rest when the pass is run again (it used to redo the same first rows every time)."""
+    today = today_d.strftime("%Y-%m-%d")
+    out = []
+    for r in rows:
+        if r["score"] < min_score:
             continue
         if not _type_targeted(r):
             continue
@@ -1800,7 +1803,21 @@ def _rescore_open(force: bool, limit: int):
             continue
         if not force and r.get("danish_level", "") and r.get("ad_language", "") != "":
             continue                       # flags already present -> nothing to fix
-        stale.append(r)
+        if force and r.get("scraped_date", "") == today:
+            continue                       # already re-scored (or first scored) today
+        out.append(r)
+    return out
+
+
+def _rescore_open(force: bool, limit: int, min_score: int = None):
+    """Shared worker for the two re-score modes. `force=False` only touches rows with missing
+    Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
+    label = "--rescore-all" if force else "--rescore"
+    ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_d = datetime.now().date()
+    floor = SCORE_THRESHOLD if min_score is None else min_score
+    stale = _rescore_candidates(_dedup_archive(MASTER_ARCHIVE), force, floor, today_d)
     if not stale:
         if force:
             log.info(f"{label}: no open shortlist-relevant rows to re-score. Done.")

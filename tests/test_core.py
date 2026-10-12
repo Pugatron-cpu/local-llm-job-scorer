@@ -357,6 +357,41 @@ class ShortlistRejectReason(unittest.TestCase):
             os.remove(path)
 
 
+class RescoreCandidates(unittest.TestCase):
+    """Selection for --rescore / --rescore-all (core._rescore_candidates)."""
+    def setUp(self):
+        from datetime import datetime, timedelta
+        self.today = datetime.now().date()
+        self.earlier = (self.today - timedelta(days=3)).isoformat()
+
+    def _row(self, url, score, **kw):
+        base = {"url": url, "score": score, "employment_type": "student", "track": "A",
+                "danish_level": "none", "ad_language": "en", "deadline": "",
+                "scraped_date": self.earlier}
+        base.update(kw)
+        return base
+
+    def _pick(self, rows, force=True, floor=75):
+        return [r["url"] for r in core._rescore_candidates(rows, force, floor, self.today)]
+
+    def test_default_floor_skips_low_scores(self):
+        rows = [self._row("hi", 80), self._row("mid", 65), self._row("lo", 30)]
+        self.assertEqual(self._pick(rows), ["hi"])
+
+    def test_lower_floor_lifts_old_low_scores_into_the_pass(self):
+        rows = [self._row("hi", 80), self._row("mid", 65), self._row("lo", 30)]
+        self.assertEqual(self._pick(rows, floor=50), ["hi", "mid"])
+
+    def test_rows_rescored_today_are_not_picked_again(self):
+        rows = [self._row("done", 80, scraped_date=self.today.isoformat()),
+                self._row("todo", 80)]
+        self.assertEqual(self._pick(rows), ["todo"])
+
+    def test_flag_mode_only_picks_missing_flags(self):
+        rows = [self._row("flagged", 80), self._row("blank", 80, danish_level="")]
+        self.assertEqual(self._pick(rows, force=False), ["blank"])
+
+
 class RawTeaserLog(unittest.TestCase):
     def test_appending_to_old_schema_migrates_first(self):
         """raw_teasers.csv written before the analytics columns existed must be realigned
