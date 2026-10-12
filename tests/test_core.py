@@ -392,6 +392,77 @@ class RescoreCandidates(unittest.TestCase):
         self.assertEqual(self._pick(rows, force=False), ["blank"])
 
 
+class UnreadablePage(unittest.TestCase):
+    """A re-score whose page had no ad must not supersede the old score."""
+    def test_empty_page_zeros_are_caught(self):
+        for why in ["The provided text is a 404 error page from a job board.",
+                    "The provided text contains only cookie consent information.",
+                    "The job description is missing; only website navigation.",
+                    "The provided text is a generic university landing page."]:
+            self.assertTrue(core._unreadable_page({"score": 0, "reasoning": why}), why)
+
+    def test_genuine_zeros_and_nonzero_scores_are_kept(self):
+        for res in [{"score": 0, "reasoning": "This is an HR role, which is explicitly scored as 0."},
+                    {"score": 0, "reasoning": "The role is for a registered nurse (sygeplejerske)."},
+                    {"score": 35, "reasoning": "Mentions cookie consent tooling for a web team."}]:
+            self.assertFalse(core._unreadable_page(res), res)
+
+
+class PageOrSnippetFallback(unittest.TestCase):
+    """An empty page is re-scored from the teaser snippet, like a failed fetch."""
+    EMPTY = {"score": 0, "reasoning": "The provided text is only a cookie consent banner."}
+    REAL = {"score": 82, "reasoning": "Strong data match."}
+
+    def _run(self, job, results):
+        calls = []
+        orig = core.score_job
+        core.score_job = lambda j, d: (calls.append(d), results[len(calls) - 1])[1]
+        try:
+            return core._score_page_or_snippet(job, "page text"), calls
+        finally:
+            core.score_job = orig
+
+    def test_empty_page_falls_back_to_the_snippet(self):
+        job = {"title": "Student Data", "company": "Acme", "snippet": "Python and SQL work."}
+        (res, desc, fell_back), calls = self._run(job, [self.EMPTY, self.REAL])
+        self.assertTrue(fell_back)
+        self.assertEqual(res["score"], 82)
+        self.assertIn("Python and SQL work.", desc)
+        self.assertEqual(len(calls), 2)
+
+    def test_readable_page_is_scored_once(self):
+        job = {"title": "Student Data", "company": "Acme", "snippet": "x"}
+        (res, _, fell_back), calls = self._run(job, [self.REAL])
+        self.assertFalse(fell_back)
+        self.assertEqual(len(calls), 1)
+
+    def test_no_snippet_returns_the_page_verdict(self):
+        job = {"title": "Student Data", "company": "Acme", "snippet": ""}
+        (res, _, fell_back), _ = self._run(job, [self.EMPTY])
+        self.assertFalse(fell_back)
+        self.assertTrue(core._unreadable_page(res))   # caller then refuses to archive it
+
+    def test_teaser_snippets_reads_the_latest_nonempty(self):
+        import tempfile, csv as _csv
+        fd, path = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=core.RAW_TEASER_FIELDS)
+            w.writeheader()
+            for snip in ["first", "", "latest"]:
+                w.writerow({"url": "https://www.jobindex.dk/jobannonce/h1/x",
+                            "canonical_url": core.canonical_url("https://www.jobindex.dk/jobannonce/h1/x"),
+                            "snippet": snip})
+        orig = core.RAW_TEASERS
+        try:
+            core.RAW_TEASERS = path
+            got = core._teaser_snippets(["https://www.jobindex.dk/jobannonce/h1/x"])
+            self.assertEqual(list(got.values()), ["latest"])
+        finally:
+            core.RAW_TEASERS = orig
+            os.remove(path)
+
+
 class RawTeaserLog(unittest.TestCase):
     def test_appending_to_old_schema_migrates_first(self):
         """raw_teasers.csv written before the analytics columns existed must be realigned

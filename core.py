@@ -1814,7 +1814,6 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
     Danish/ad-language flags; `force=True` re-scores all open shortlist-relevant rows."""
     label = "--rescore-all" if force else "--rescore"
     ensure_model_available()   # re-scoring scores too: same loud preflight as a normal run
-    today = datetime.now().strftime("%Y-%m-%d")
     today_d = datetime.now().date()
     floor = SCORE_THRESHOLD if min_score is None else min_score
     stale = _rescore_candidates(_dedup_archive(MASTER_ARCHIVE), force, floor, today_d)
@@ -1828,14 +1827,80 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
         log.info(f"{label}: {len(stale)} rows to re-score; doing the first {limit} "
                  f"(run again for the rest).")
         stale = stale[:limit]
+    _rescore_rows(stale, label)
+
+
+def rescore_urls(urls):
+    """`python a_scrape.py --rescore-url <url> [<url> ...]`: re-score specific archived roles,
+    whatever their score or status. For the one role a floor can't reach (a rubric change that
+    should lift a 30) without re-scoring every other low row with it."""
+    ensure_model_available()
+    want = {canonical_url(u) for u in urls}
+    rows = [r for r in _dedup_archive(MASTER_ARCHIVE) if canonical_url(r.get("url", "")) in want]
+    missing = want - {canonical_url(r.get("url", "")) for r in rows}
+    for u in sorted(missing):
+        log.warning(f"--rescore-url: not in the archive, skipped: {u}")
+    if rows:
+        _rescore_rows(rows, "--rescore-url")
+
+
+# A re-fetch can come back as a 404, a cookie wall or a landing page once an ad is taken down
+# (or hidden behind consent). The model then says so and scores 0 — correctly, for the text it
+# got — but the 0 would SUPERSEDE a real score (latest wins). Matched on the model's own
+# reasoning, and only at score 0: checked against 83 zeros from one re-score pass, this caught
+# all 15 empty pages and none of the 68 genuine zeros (HR, sales, nursing, ...).
+_UNREADABLE_RE = re.compile(
+    r"\b404\b|page not found|not be found|could not be found|cookie"
+    r"|no (?:actual )?job (?:description|ad)|(?:description|advertisement|content) is missing"
+    r"|landing page|website navigation|navigation elements|error page|no job content", re.I)
+
+
+def _unreadable_page(res: dict) -> bool:
+    """True when a score describes the PAGE (no ad on it), not the role."""
+    return res.get("score") == 0 and bool(_UNREADABLE_RE.search(res.get("reasoning", "") or ""))
+
+
+def _score_page_or_snippet(job: dict, desc: str):
+    """score_job, with the fetch-failure fallback extended to pages that loaded but held no ad
+    (LEGO's bot wall, cookie consent, a removed ad): score the teaser snippet instead, exactly
+    as a failed fetch already does. Returns (result, the text actually scored, fell_back)."""
+    res = score_job(job, desc)
+    snippet = (job.get("snippet") or "").strip()
+    if _unreadable_page(res) and snippet:
+        desc = f"{job['title']}\n{job['company']}\n{snippet}"
+        res = score_job(job, desc)
+        return res, desc, True
+    return res, desc, False
+
+
+def _teaser_snippets(urls) -> dict:
+    """canonical url -> latest non-empty snippet from raw_teasers.csv (the re-score paths have
+    no teaser of their own). Empty dict if the log is off or missing."""
+    want = {canonical_url(u) for u in urls}
+    out = {}
+    if not (want and os.path.isfile(RAW_TEASERS)):
+        return out
+    with open(RAW_TEASERS, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            cu = r.get("canonical_url") or canonical_url(r.get("url", ""))
+            if cu in want and (r.get("snippet") or "").strip():
+                out[cu] = r["snippet"]
+    return out
+
+
+def _rescore_rows(stale, label):
+    """Re-fetch + re-score `stale` archive rows and append the fresh rows (latest wins)."""
+    today = datetime.now().strftime("%Y-%m-%d")
     log.info(f"{label}: re-fetching + re-scoring {len(stale)} rows...")
 
+    snippets = _teaser_snippets(r.get("url", "") for r in stale)
     jobs = []
     for r in stale:
         jobs.append({"title": r.get("title", ""), "company": r.get("company", ""),
                      "location": r.get("location", "N/A"),
                      "published_date": r.get("published_date", "N/A"),
-                     "snippet": "", "url": r.get("url", ""),
+                     "snippet": snippets.get(canonical_url(r.get("url", "")), ""),
+                     "url": r.get("url", ""),
                      "source_site": r.get("source", "")})
     fetch_all(jobs)
 
@@ -1848,10 +1913,16 @@ def _rescore_open(force: bool, limit: int, min_score: int = None):
                 continue
             job["source"] = "full"
             job["_source_location"] = job.get("location", "")   # see _score_worker
-            res = score_job(job, desc)
+            res, desc, fell_back = _score_page_or_snippet(job, desc)
             if res["reasoning"] == "scoring error":
                 log.warning(f"  {label}: scoring failed, skipping {job['title']!r}")
                 continue
+            if _unreadable_page(res):     # keep the old score: this one is about the page
+                log.warning(f"  {label}: no ad on the fetched page, old score kept: {job['url']}")
+                continue
+            if fell_back:
+                job["source"] = "snippet"
+                log.info(f"  {label}: no ad on the page, scored the teaser snippet: {job['url']}")
             job.update(res)
             # Same post-score deterministic merge as the main scoring path, so a re-scored
             # row carries the same extractor-owned fields as a freshly scored one.
@@ -2093,7 +2164,10 @@ def main():
         # overwrites job['location'] with the model's answer, and extract_location prefers
         # the source-provided one (The Hub/ATS carry a real locality; Jobindex says "N/A").
         job["_source_location"] = job.get("location", "")
-        res = score_job(job, desc)
+        res, desc, fell_back = _score_page_or_snippet(job, desc)
+        if fell_back:
+            job["source"] = "snippet"
+            job["_page_fallback"] = True
         job.update(res)
         # Post-score deterministic merge: confident extractor values overwrite the LLM's
         # mechanical fields; sentinels leave them alone. Judgment fields untouched.
@@ -2121,7 +2195,7 @@ def main():
         _detect_lang("Warm up the language detector before the scoring pool starts.")
 
     matches = []
-    errors = 0
+    errors = unreadable = 0
     fields_det = fields_llm = danish_lifts = 0   # extractor-vs-LLM field counts, for the log
     with ArchiveWriter(MASTER_ARCHIVE) as archive:
         with ThreadPoolExecutor(max_workers=max(1, SCORE_WORKERS)) as pool:
@@ -2136,6 +2210,11 @@ def main():
                 if job["reasoning"] == "scoring error":
                     errors += 1
                     continue  # don't archive failures -> URLs stay unseen and get retried
+                if job.pop("_page_fallback", False):
+                    fallback += 1             # same bucket as a failed fetch (runs.csv)
+                if _unreadable_page(job):     # no ad on the page AND no usable snippet:
+                    unreadable += 1           # don't archive a score about the page; the
+                    continue                  # URL stays unseen and is retried next run
                 stats = job.pop("_extract_stats", None)
                 if stats:
                     fields_det += stats["det"]
@@ -2150,7 +2229,8 @@ def main():
                           f"{job['title']} @ {job['company']} ({job.get('source_site','?')})")
                     matches.append(job)
         log.info(f"Stage 3b: scored + archived {archive.count} jobs "
-                 f"({len(matches)} newly qualify; {errors} errors; {SCORE_WORKERS} workers)")
+                 f"({len(matches)} newly qualify; {errors} errors; {unreadable} pages with no ad "
+                 f"and no snippet, left for the next run; {SCORE_WORKERS} workers)")
         log.info(f"Extractors: {fields_det} mechanical field(s) set deterministically, "
                  f"{fields_llm} left to the LLM; danish_level floor lifted "
                  f"{danish_lifts} row(s)")

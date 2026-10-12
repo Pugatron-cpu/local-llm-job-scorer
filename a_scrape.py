@@ -17,6 +17,8 @@ ads, scores them with the local LLM, appends to the archive
                                      # same, from score 50 up instead of the threshold: after
                                      # a rubric WIDENS what fits, so low old scores can rise.
                                      # 40 rows per run; run again for the rest.
+    python a_scrape.py --rescore-url <url> [<url> ...]
+                                     # re-score specific archived roles, any score
     python a_scrape.py --watch       # quick check: ONLY the company watchlist (profile
                                      # [[watch]] entries) -> score new postings + rebuild
                                      # the report. Skips Jobindex / The Hub.
@@ -34,10 +36,15 @@ core.py. See README.md.
 import sys
 
 import core
-from core import main, rescore_missing_flags, rescore_all
+from core import main, rescore_missing_flags, rescore_all, rescore_urls
 
 if __name__ == "__main__":
-    if "--rescore-all" in sys.argv:
+    if "--rescore-url" in sys.argv:
+        urls = sys.argv[sys.argv.index("--rescore-url") + 1:]
+        if not urls:
+            sys.exit("--rescore-url: give one or more archived job URLs.")
+        rescore_urls(urls)
+    elif "--rescore-all" in sys.argv:
         i = sys.argv.index("--rescore-all")
         nxt = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
         rescore_all(min_score=int(nxt) if nxt.isdigit() else None)
