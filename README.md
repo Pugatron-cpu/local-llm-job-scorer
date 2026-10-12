@@ -30,6 +30,7 @@ python a_scrape.py            # find & score roles -> Weekly_Job_Matches.md
 python a_scrape.py --rescore  # maintenance: refresh open rows missing Danish/ad-language flags
 python a_scrape.py --rescore-all  # re-score ALL open rows (use after a model/prompt change)
 python a_scrape.py --rescore-all 50   # same, from score 50 up: after a rubric WIDENS what fits
+python a_scrape.py --rescore-url <url> [<url> ...]   # re-score specific archived roles, any score
 python a_scrape.py --watch    # quick check of the company watchlist only (see below)
 python a_scrape.py --model-preset fallback  # score with another MODEL_PRESETS entry (see below)
 python b_insights.py          # funnel + score-vs-behaviour + market + skill demand
@@ -129,6 +130,10 @@ Changing the rubric changes the scores, and old rows are then no longer comparab
 `tests/test_score_prompt.py` pins the owner's rendered prompt byte-for-byte so that can't happen by
 accident; the defaults reproduce it exactly. If you edit the rubric deliberately, re-score
 (`a_scrape.py --rescore-all`) or accept that rows before and after are on different scales.
+A rubric that **widens** what fits needs a lower floor, `--rescore-all 50`: by default only rows
+already at or above `SCORE_THRESHOLD` are re-scored, so a role the old rubric put at 65 could never
+rise. Each pass does 40 rows and skips rows already scored that day, so running it again moves on
+to the rest. For a single role below the floor, `--rescore-url <url>`.
 
 **Known limit:** `is_tech_company` is still the archive *column name* (renaming it means an archive
 migration). For a non-tech profile, read it as "is the employer in this candidate's target sector",
@@ -168,7 +173,8 @@ same teaser shape and is isolated, so one failing source can't take down the run
 - **The Hub** (`thehub.io`, on) — Nordic startup/scaleup board, English-first and tech-heavy.
   Hits the JSON search API directly (`THEHUB_ENABLED = True`, endpoint verified 2026-06-25). To
   turn it off, set `THEHUB_ENABLED = False`.
-- **ATS watchlist** (`greenhouse.io` / `lever.co`, on) — polls the **public career APIs of a
+- **ATS watchlist** (`greenhouse.io` / `lever.co`, **off**: `ATS_ENABLED = False`, since only
+  ~2 of 55 board roles were student-relevant; flip it for a full-time search) — polls the **public career APIs of a
   hand-picked list of companies** you'd actually want to work at (`ATS_COMPANIES` in
   `config.py`, or `ats_companies` in your toml). No auth, no scraping; high precision, and it
   surfaces roles that never hit Jobindex/The Hub. A location filter (`ATS_LOCATION_KEEP`) keeps
@@ -177,6 +183,14 @@ same teaser shape and is isolated, so one failing source can't take down the run
 - **Jobnet** (`jobnet.dk`, off) — scaffold for Denmark's public job board. Left disabled: as of
   2026-07 its search API sits behind a StarPlatform (MitID) login, so there is no public
   keyword search to use; see the note in `config.py`.
+
+**Pages that load but hold no ad.** A fetch can return a 404, a cookie wall, a landing page or a
+bot block (LEGO's site, for one) instead of the ad. The model then scores the page, not the role,
+and says so. A score of 0 whose reasoning describes the page (`core._unreadable_page`) is treated
+like a failed fetch: the role is re-scored from its teaser snippet (counted in `runs.csv`
+`snippet_fallback`). With no usable snippet it is not archived and is retried next run. The
+re-score commands do the same, taking the snippet from `raw_teasers.csv`, and keep the old score
+when there is none. Snippet scores rest on ~500 characters, so the location is often blank.
 
 The same role from two sources is collapsed by a **canonical URL** key plus a normalised
 company+title fallback (`role_key`), and that key links archive rows to the tracker. The
@@ -428,8 +442,10 @@ the jobs), `link_regex` (finds each posting in that page's source) and optionall
 `link_template` (builds the url from the regex groups), `render = "browser"` for pages that
 build their list with JavaScript, and `aliases` (how job boards spell the company). Most boards
 fit one of a few shapes: plain links on the company site, an HR-ON list (`show-job/<id>`), an
-Emply board (`/ad/<slug>/<id>`), a sitemap filtered by the regex, or a JSON service (Nexi's
-Oracle one). Check a new entry with a dry run before relying on it; `watchlist.py` has the format.
+Emply board (`/ad/<slug>/<id>`), a SuccessFactors search page (`/job/<slug>/<id>`, narrowed by
+its own query string, e.g. Novo Nordisk's `?q=graduate&optionsFacetsDD_country=DK`), a sitemap
+filtered by the regex, or a JSON service (the Oracle recruiting API that Nexi and Danske Bank
+use: match `"Id"` with a 4-6 digit group, or the long location ids in the same JSON come along). Check a new entry with a dry run before relying on it; `watchlist.py` has the format.
 
 Three careers platforms have public JSON APIs and get a typed `source` instead of a regex:
 `workday` (POST listing filtered by location facet ids; the detail's `endDate` is the deadline,
