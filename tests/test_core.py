@@ -323,6 +323,19 @@ class ShortlistRejectReason(unittest.TestCase):
         reason = core.shortlist_reject_reason(self._row(score="78", track="B"))
         self.assertIn("track B", reason)
 
+    def test_track_b_hidden_when_the_profile_switched_it_off(self):
+        # An archived Track B row that clears every bar is still hidden once Track B is off.
+        orig = core.TRACK_B_DEF
+        try:
+            core.TRACK_B_DEF = "TRACK B — something"
+            self.assertIsNone(core.shortlist_reject_reason(self._row(score="85", track="B")))
+            core.TRACK_B_DEF = ""
+            self.assertEqual(core.shortlist_reject_reason(self._row(score="85", track="B")),
+                             "track B (switched off for this profile)")
+            self.assertIsNone(core.shortlist_reject_reason(self._row(score="85", track="A")))
+        finally:
+            core.TRACK_B_DEF = orig
+
     def test_predicate_matches_shortlist_with_reasons(self):
         # The console predicate and the report's filter must agree on the same row.
         import tempfile, csv as _csv

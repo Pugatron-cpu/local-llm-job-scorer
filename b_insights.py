@@ -38,7 +38,8 @@ import core
 # --- status groups (a tracker row holds the CURRENT status; these fold the cumulative funnel) -
 TRIAGE         = {"interested", "skipped"}                       # logged, never applied
 APPLIED_PLUS   = {"applied", "interview", "offer", "hired",      # application actually sent
-                  "rejected", "rejected_after_interview"}
+                  "rejected", "rejected_after_interview",
+                  "no_response"}                                 # sent, never answered
 INTERVIEW_PLUS = {"interview", "offer", "hired", "rejected_after_interview"}
 OFFER_PLUS     = {"offer", "hired"}
 ACTIVE         = {"interested", "applied", "interview"}          # still live / chaseable

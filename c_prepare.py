@@ -20,6 +20,9 @@ USAGE
                                                # age out the queue: skip roles older than
                                                # `days` (default 30) or past deadline.
                                                # Reports only, unless --yes.
+    python c_prepare.py --close-silent [--yes] # settle applications with no reply after
+                                               # 6 weeks (and 4 past deadline) as
+                                               # no_response. Reports only, unless --yes.
 
 applications/ is the live queue: it holds a brief only while its role is still worth acting on
 (status "interested"). Once a role is applied/rejected/skipped, --status moves its brief into
@@ -113,7 +116,7 @@ TRACKER_FIELDS = ["date_added", "status", "company", "role", "url", "employment_
                   "brief_file", "notes"]
 
 STATUSES = ["interested", "applied", "interview", "offer", "hired", "rejected",
-            "rejected_after_interview", "skipped"]
+            "rejected_after_interview", "no_response", "skipped"]
 
 
 def _load_tracker():
@@ -564,6 +567,92 @@ def clear_stale(days: int = STALE_AFTER_DAYS, apply: bool = False) -> int:
     return len(hits)
 
 
+# --- silent applications (age out `applied`) ------------------------------------------------
+# An application with no reply stays `applied` forever, which inflates the open count and makes
+# the funnel read as "still waiting" months after the employer moved on. This settles it as
+# `no_response`: its own status, because silence is not a rejection. The clock starts at the
+# date the row moved to `applied` in status_history.csv; rows from before that log existed
+# fall back to date_added, which is never later than the real application date.
+SILENT_AFTER_DAYS = getattr(config, "SILENT_AFTER_DAYS", 42)
+SILENT_AFTER_DEADLINE_DAYS = getattr(config, "SILENT_AFTER_DEADLINE_DAYS", 28)
+
+
+def _applied_dates() -> dict:
+    """canonical url -> date of its LATEST move to `applied` in status_history.csv."""
+    out = {}
+    path = _status_history_path()
+    if not os.path.isfile(path):
+        return out
+    with open(path, newline="", encoding="utf-8") as f:
+        for h in csv.DictReader(f):
+            if (h.get("new_status") or "").strip().lower() != "applied":
+                continue
+            d = core._parse_date(h.get("date"))
+            cu = core.canonical_url(h.get("url", ""))
+            if d is not None and (cu not in out or d > out[cu]):
+                out[cu] = d
+    return out
+
+
+def close_silent(apply: bool = False) -> int:
+    """Mark `applied` rows `no_response` once SILENT_AFTER_DAYS have passed since applying AND
+    SILENT_AFTER_DEADLINE_DAYS since a stated deadline. DRY-RUN unless apply=True, like
+    clear_stale. Rows with no readable date are listed and left alone."""
+    rows = _load_tracker()
+    applied_on = _applied_dates()
+    today = datetime.now().date()
+    hits, unknown = [], []
+    for r in rows:
+        if (r.get("status") or "").strip().lower() != "applied":
+            continue
+        start = applied_on.get(core.canonical_url(r.get("url", ""))) \
+            or core._parse_date(r.get("date_added"))
+        if start is None:
+            unknown.append(r)
+            continue
+        due = start + timedelta(days=SILENT_AFTER_DAYS)
+        dl = core._parse_date(r.get("deadline"))
+        if dl is not None:
+            due = max(due, dl + timedelta(days=SILENT_AFTER_DEADLINE_DAYS))
+        if today >= due:
+            hits.append((r, (today - start).days))
+
+    if not hits and not unknown:
+        print("Nothing to close: every open application is still inside its window.")
+        return 0
+
+    for r, age in hits:
+        print(f"  [{age:>4}d] {(r.get('company','') or '')[:26]:<28} "
+              f"{(r.get('role','') or '')[:40]}")
+    for r in unknown:
+        print(f"  [   ?d] {(r.get('company','') or '')[:26]:<28} "
+              f"unreadable date_added — left alone")
+
+    if not apply:
+        print(f"\n{len(hits)} application(s) would be closed as no_response, "
+              f"{len(unknown)} skipped over. Nothing written. To apply:\n"
+              f"  python c_prepare.py --close-silent --yes")
+        return 0
+    if not hits:
+        print("\nNothing to apply.")
+        return 0
+
+    stamp = today.strftime("%Y-%m-%d")
+    transitions = [{"date": stamp, "url": r.get("url", ""), "company": r.get("company", ""),
+                    "role": r.get("role", ""), "old_status": "applied",
+                    "new_status": "no_response"} for r, _ in hits]
+    for r, age in hits:
+        r["status"] = "no_response"
+        note = (r.get("notes") or "").strip()
+        r["notes"] = f"{note} | auto-closed {stamp} (no response, {age}d)".lstrip(" |")
+
+    _save_tracker(rows)                   # snapshots to _backups/ first
+    _append_status_history(transitions)   # only after the tracker write succeeds
+    archive_settled_briefs()
+    print(f"\nClosed {len(hits)} application(s) as no_response.")
+    return len(hits)
+
+
 def _bullets(items, empty="_(none extracted)_"):
     items = [str(x).strip() for x in (items or []) if str(x).strip()]
     return "\n".join(f"- {x}" for x in items) if items else empty
@@ -996,6 +1085,16 @@ def main(argv):
         clear_stale(int(nums[0]) if nums else STALE_AFTER_DAYS, apply)
         return
 
+    if argv[0] == "--close-silent":
+        rest = argv[1:]
+        if any(a != "--yes" for a in rest):
+            print("Usage: python c_prepare.py --close-silent [--yes]\n"
+                  f"  closes applications silent for {SILENT_AFTER_DAYS}d "
+                  f"(and {SILENT_AFTER_DEADLINE_DAYS}d past deadline); without --yes it only reports.")
+            return
+        close_silent("--yes" in rest)
+        return
+
     if argv[0] == "--archive-briefs":
         n = archive_settled_briefs()
         live = len([f for f in os.listdir(config.APPLICATIONS_DIR) if f.endswith(".md")]) \
@@ -1019,7 +1118,8 @@ def main(argv):
               "  python c_prepare.py --score-tracker # backfill scores for manually-added roles\n"
               "  python c_prepare.py --rebrief <url> # regenerate the brief for a tracked role\n"
               "  python c_prepare.py --archive-briefs # move settled briefs out of the queue\n"
-              "  python c_prepare.py --clear-stale [days] [--yes]  # age out the queue")
+              "  python c_prepare.py --clear-stale [days] [--yes]  # age out the queue\n"
+              "  python c_prepare.py --close-silent [--yes]        # close unanswered applications")
 
 
 if __name__ == "__main__":
