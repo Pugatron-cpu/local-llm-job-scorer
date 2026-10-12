@@ -307,13 +307,29 @@ TARGET_QUERIES = [
     #     these only add recall for the field-technician titles no query reached ---
     "IT-tekniker",
     "IT supporter",
-    # --- Track B: foot-in-the-door roles (LLM keeps only the ones at tech companies).
-    #     Noisier; comment out if a run gets too slow. Trimmed 2026-07: dropped
-    #     "workplace coordinator" + "logistics coordinator student" (generic ops/logistics,
-    #     rarely a tech employer — pure scoring cost). Re-add if you want wider Track B reach.
-    "office assistant",
-    "office coordinator",
-    "kontorassistent",
+    # --- Thesis collaboration (2026-10). The profile asks for a Spring 2027 thesis with a
+    #     company; no query targeted one (25 thesis titles in the whole raw log, found by
+    #     accident). Danish ads say "specialestuderende" / "speciale" ---
+    "thesis",
+    "master thesis",
+    "specialestuderende",
+    "speciale",
+    # --- Consulting (2026-10). The watchlist reads the Big 4 / Accenture / McKinsey directly;
+    #     these reach the other tech/data consultancies' student and graduate roles ---
+    "student consultant",
+    "studentermedhjælper konsulent",
+    "IT consultant student",
+    "data consultant",
+    "graduate consulting",
+    # --- ERP/CRM platforms + AI adoption (2026-10): both score as Track A on their tasks ---
+    "SAP student",
+    "Dynamics 365 student",
+    "ERP student",
+    "AI adoption",
+    "digital transformation student",
+    # --- Track B queries ("office assistant", "office coordinator", "kontorassistent") removed
+    #     2026-10-12 when the owner switched Track B off. A profile that wants Track B back
+    #     should list them in its own `queries`.
 ]
 
 # Company-level exclusions (substring match, lowercase).
@@ -341,6 +357,12 @@ TECH_TERMS = [
     # Cheap: ~16 titles in the whole raw teaser log. Scored like anything else.
     "graduate", "trainee", "early career",
     "it-tekniker", "it tekniker", "it supporter",
+    # Added 2026-10 with the thesis / consulting / ERP / AI-adoption queries: their titles
+    # often carry no term above ("Specialestuderende til ...", "Student Consultant").
+    # "speciale" is not a substring of "specialist", so it doesn't drag those in.
+    "thesis", "speciale", "consultant", "konsulent",
+    " sap ", " erp ", "dynamics 365", "servicenow",
+    "digitali", "digital transformation", "ai adoption",
 ]
 # Foot-in-the-door roles. Kept by the LLM ONLY when the employer is a tech company.
 # Set BRIDGE_TERMS = [] to disable Track B entirely.
@@ -697,3 +719,11 @@ BRIEF_QUEUE_STATUSES = ["interested"]   # tracker statuses that keep a brief in 
 # settles anything older than this (or past its stated deadline) as "skipped". Age is read from
 # the tracker's date_added, never from the brief filename, so --rebrief doesn't reset the clock.
 STALE_AFTER_DAYS = 30      # default window for --clear-stale; override per run: --clear-stale 14
+
+# Applications age too. `c_prepare --close-silent` settles an `applied` row as `no_response`
+# once BOTH windows have passed: SILENT_AFTER_DAYS since you applied, and
+# SILENT_AFTER_DEADLINE_DAYS since its stated deadline (employers often wait for the deadline
+# before reading). No response is not a rejection, so it gets its own status; a late reply is
+# a normal `--status` change.
+SILENT_AFTER_DAYS          = 42   # 6 weeks after applying
+SILENT_AFTER_DEADLINE_DAYS = 28   # 4 weeks after the deadline, when the ad states one

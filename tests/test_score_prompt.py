@@ -26,25 +26,37 @@ JOB = {"title": "Student Data Engineer", "company": "Acme A/S"}
 DESC = "We are hiring a student data engineer. Python, SQL, Azure."
 
 # The prompt as it rendered BEFORE the refactor, with the bio inline. Reproduced literally.
+# Changed deliberately 2026-10-12: the owner's Track A gained four role families (thesis,
+# consulting, ERP/CRM, AI adoption) and the audit/"consultant" guards. Scores before that date
+# were made with the old text. Same day, Track B was switched off in the owner profile, so the
+# intro says ONE kind of role and the Track B block (with its bridge sentence) is gone.
 EXPECTED = f"""You are screening jobs for a candidate. Score the fit 0-100.
-There are TWO acceptable kinds of role.
+There is ONE acceptable kind of role.
 
 TRACK A — technical / data role (preferred):
   data analyst, BI, data/AI/ML engineering, IT/service-desk support, software,
   automation, etc. Score by overlap with the candidate's skills and projects.
+  These are ALSO Track A, scored the same way on their day-to-day tasks:
+  - master's thesis collaborations ("thesis", "speciale", "specialestuderende") on a
+    data, AI, software or analytics topic. A thesis is project work, not a job; do not
+    lower the score for that.
+  - technology / data / AI consulting: student, junior or graduate consultant roles in
+    the tech, data, AI or digital practices of consultancies (Big 4 included), client-facing
+    and business-analysis work included.
+  - ERP / CRM platform roles (SAP, Microsoft Dynamics 365, ServiceNow, Salesforce platform):
+    functional or technical consultant, business analyst, implementation, support.
+  - AI adoption, digital transformation and automation roles at ANY employer, when the
+    day-to-day work is introducing, building or supporting AI, automation or data tooling.
     85-100: technical role closely matching the skills/projects.
     60-84 : technical but only partial overlap, or borderline seniority.
   "Technical" means SOFTWARE/DATA/IT technical. A role in an unrelated engineering or
   science domain (mechanical, civil, electrical, chemical, construction, lab/clinical,
   pharma QA, finance/audit, legal) scores <= 35 UNLESS its day-to-day tasks are
   substantially programming, data or IT work matching the candidate's actual skills.
-  Do not award points for the word "engineer" or "analyst" alone.
+  Audit, tax, deal and financial-advisory consulting is finance/audit, not tech consulting.
+  Do not award points for the word "engineer", "analyst" or "consultant" alone.
 
-TRACK B — foot-in-the-door role AT a tech company:
-  office assistant, reception, front desk, workplace/facilities, logistics,
-  operations, coordinator, administration, support. The candidate wants to enter a
-  tech company via 7 years of combined corporate-operations and hospitality experience,
-  then move laterally."""
+Any HR, marketing, or sales role scores 0."""
 
 
 class ScorePromptGoldenTest(unittest.TestCase):
@@ -84,6 +96,8 @@ class ScorePromptGoldenTest(unittest.TestCase):
 
     def test_profile_without_the_key_drops_the_sentence_cleanly(self):
         """A profile that sets no track_b_bridge must not render 'via , then move laterally'."""
+        if not core.TRACK_B_DEF:
+            self.skipTest("active profile has Track B switched off (covered by the _test profile)")
         original = core.TRACK_B_BRIDGE
         try:
             core.TRACK_B_BRIDGE = ""

@@ -44,6 +44,8 @@ python c_prepare.py --rebrief <url>  # regenerate the brief for a role already i
 python c_prepare.py --archive-briefs # sweep settled briefs out of the queue into _archive/
 python c_prepare.py --clear-stale    # DRY RUN: which queued roles have aged out (default 30d)
 python c_prepare.py --clear-stale 14 --yes   # apply it: mark them skipped, archive their briefs
+python c_prepare.py --close-silent   # DRY RUN: which applications never got a reply
+python c_prepare.py --close-silent --yes     # apply it: mark them no_response
 ```
 
 `--rebrief` exists because prepping an exact-URL duplicate is deliberately a no-op (no re-fetch,
@@ -228,6 +230,20 @@ deadline as `skipped`, then runs the normal archive sweep.
 It never touches orphan `.md` files with no tracker row (e.g. briefs left by a failed prep, where
 company extraction produced `..._role_2.md`). The sweep is driven by each row's `brief_file`, so
 files no row points at are invisible to it and have to be moved by hand.
+
+### Closing silent applications (`--close-silent`)
+
+The same ageing for `applied`. An application nobody answers stays `applied` forever, which makes
+the funnel read as "still waiting" long after the employer moved on. `--close-silent` settles it
+as `no_response` once **both** windows have passed: `SILENT_AFTER_DAYS` (default 42, six weeks)
+since you applied, and `SILENT_AFTER_DEADLINE_DAYS` (default 28) since a stated deadline.
+
+- **`no_response` is its own status, not `rejected`.** A rejection is a decision with a date;
+  silence isn't, and folding them together would blur the funnel. `b_insights` counts it as sent.
+- **The clock starts when the row moved to `applied`** in `status_history.csv`. Rows from before
+  that log existed fall back to `date_added`, which is never later than the real application.
+- Dry run by default, same plumbing and `notes` stamp as `--clear-stale`. A late reply is an
+  ordinary `--status <url> interview` (or `rejected`).
 
 ## Deterministic extraction (`extractors.py`)
 
@@ -498,6 +514,8 @@ committed. All scoring runs against a local Ollama model, so nothing is sent to 
 - `STALE_AFTER_DAYS` — how old a queued role gets before `--clear-stale` offers to skip it
   (default 30). Note this is about *your* queue going stale, not the ad closing —
   `REPORT_FRESH_DAYS` governs the shortlist, this governs `applications/`.
+- `SILENT_AFTER_DAYS` / `SILENT_AFTER_DEADLINE_DAYS` — when `--close-silent` offers to close an
+  unanswered application (defaults 42 and 28).
 - `SCORE_THRESHOLD`, `TARGET_QUERIES`; the model via `MODEL_PRESETS` (+ `--model-preset` /
   `JOBSEARCH_MODEL_PRESET` — see Model presets above).
 - `COMMUTABLE_AREAS` — the deterministic commute check's geography (per profile via

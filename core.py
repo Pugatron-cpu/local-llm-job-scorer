@@ -1597,6 +1597,8 @@ def shortlist_reject_reason(r: dict, today=None):
     if EXCLUDE_DANISH_ADS and not danish_ok and str(r.get("ad_language", "")).lower() == "da" \
             and not _ENGLISH_VERSION_RE.search(r.get("title", "")):
         return "ad written in Danish (hidden by filter)"
+    if r.get("track") == "B" and not TRACK_B_DEF:      # archived before Track B was switched off
+        return "track B (switched off for this profile)"
     if r.get("track") == "B" and score < TRACK_B_MIN_SCORE:
         return f"track B below its own bar ({TRACK_B_MIN_SCORE})"
     # Still listed on its careers page = open until its deadline, however long ago first seen.
